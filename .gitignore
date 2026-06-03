@@ -2,5 +2,6 @@ node_modules/
 .env
 .tokens.json
 .drafts.json
+.mock-xero-time.json
 config/userMap.json
 *.log

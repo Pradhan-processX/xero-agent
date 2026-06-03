@@ -3,9 +3,11 @@
 // Run after `npm run auth`:  npm run test:xero
 const xero = require('./xero');
 const store = require('./store');
+const config = require('./config');
 
 (async () => {
   console.log(`Storage backend: ${store.backend}`);
+  if (config.xero.mock) console.log('⚠️  XERO_MOCK=true — using seeded data, NOT a real Xero connection.');
   try {
     const projects = await xero.getProjects();
     console.log(`\nPASS - connected. ${projects.length} project(s):`);

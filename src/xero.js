@@ -1,7 +1,12 @@
 'use strict';
+const fs = require('fs');
+const crypto = require('crypto');
 const { XeroClient } = require('xero-node');
 const config = require('./config');
 const store = require('./store');
+const mockData = require('./mockData');
+
+const MOCK = config.xero.mock;
 
 // --- Token persistence (store backend: local file in dev, Azure Table when configured) ---
 async function loadTokenSet() {
@@ -80,6 +85,7 @@ let _projectsCache = { at: 0, data: null };
 const _tasksCache = new Map(); // projectId -> { at, data }
 
 async function getProjects() {
+  if (MOCK) return mockData.projects.map(({ tasks, ...p }) => p);
   if (_projectsCache.data && Date.now() - _projectsCache.at < CACHE_TTL_MS) {
     return _projectsCache.data;
   }
@@ -95,6 +101,10 @@ async function getProjects() {
 }
 
 async function getTasks(projectId) {
+  if (MOCK) {
+    const p = mockData.projects.find((x) => x.projectId === projectId);
+    return p ? p.tasks : [];
+  }
   const cached = _tasksCache.get(projectId);
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.data;
   const { x, tid } = await ensureToken();
@@ -110,6 +120,7 @@ async function getTasks(projectId) {
 }
 
 async function getProjectUsers() {
+  if (MOCK) return mockData.users;
   const { x, tid } = await ensureToken();
   const res = await x.projectApi.getProjectUsers(tid);
   return (res.body.items || []).map((u) => ({ userId: u.userId, name: u.name, email: u.email }));
@@ -117,6 +128,20 @@ async function getProjectUsers() {
 
 // Create one time entry. duration is in MINUTES. idempotencyKey prevents double-posting.
 async function createTimeEntry({ projectId, userId, taskId, dateUtc, durationMin, description }, idempotencyKey) {
+  if (MOCK) {
+    const entry = {
+      timeEntryId: 'mock-time-' + crypto.randomUUID(),
+      projectId, userId, taskId, dateUtc, duration: Math.round(durationMin), description,
+      idempotencyKey, loggedAt: new Date().toISOString(),
+    };
+    // Append to a local log so you can inspect exactly what WOULD be posted to Xero.
+    let log = [];
+    try { log = JSON.parse(fs.readFileSync(config.xero.mockTimeLog, 'utf8')); } catch {}
+    log.push(entry);
+    fs.writeFileSync(config.xero.mockTimeLog, JSON.stringify(log, null, 2));
+    console.log(`[MOCK] would POST /Time: ${durationMin}min  task=${taskId}  user=${userId}  date=${dateUtc}`);
+    return entry;
+  }
   const { x, tid } = await ensureToken();
   const payload = {
     userId,

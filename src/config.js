@@ -16,6 +16,10 @@ const config = {
     tokenFile: process.env.XERO_TOKEN_FILE || './.tokens.json',
     // Scopes the org connection needs. offline_access -> refresh tokens for unattended writes.
     scopes: 'openid profile email projects projects.read offline_access',
+    // Mock mode: no real Xero connection. Seeded projects/tasks/users; writes are logged
+    // locally instead of posted. Flip to false once the org connection is authorised.
+    mock: process.env.XERO_MOCK === 'true',
+    mockTimeLog: process.env.XERO_MOCK_TIME_LOG || './.mock-xero-time.json',
   },
   llm: {
     openaiApiKey: process.env.OPENAI_API_KEY || '',

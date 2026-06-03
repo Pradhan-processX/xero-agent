@@ -18,7 +18,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get('/health', (_req, res) => res.json({ ok: true, storage: store.backend }));
+app.get('/health', (_req, res) => res.json({ ok: true, storage: store.backend, mock: config.xero.mock }));
 
 // Resolve the person + their scoped projects (allowlist) with tasks attached.
 async function scopedProjectsFor(identity) {
