@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "auth": "node src/auth-cli.js"
+    "auth": "node src/auth-cli.js",
+    "test:xero": "node src/test-connection.js"
   },
   "engines": {
     "node": ">=18"
