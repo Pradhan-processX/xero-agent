@@ -5,7 +5,7 @@ const config = require('./config');
 async function callLLM(systemPrompt, userMessage) {
   const useAzure = !!config.llm.azureEndpoint;
   const url = useAzure
-    ? `${config.llm.azureEndpoint}/openai/deployments/${config.llm.azureDeployment}/chat/completions?api-version=2024-02-01`
+    ? `${config.llm.azureEndpoint}/openai/deployments/${config.llm.azureDeployment}/chat/completions?api-version=${config.llm.azureApiVersion}`
     : 'https://api.openai.com/v1/chat/completions';
   const headers = useAzure
     ? { 'api-key': config.llm.azureKey, 'Content-Type': 'application/json' }
