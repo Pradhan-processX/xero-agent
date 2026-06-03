@@ -1,0 +1,124 @@
+swagger: "2.0"
+info:
+  title: Xero Timesheet Agent
+  description: >
+    Tools for a Copilot Studio agent: turn a person's plain-language work description into
+    grounded Xero Projects time entries, review the week, and submit to Xero.
+  version: "0.1.0"
+# host/basePath/schemes are set when you import this as a Power Platform custom connector
+# (point them at your deployed backend, e.g. host: your-app.azurewebsites.net).
+host: localhost:3000
+basePath: /
+schemes:
+  - https
+consumes:
+  - application/json
+produces:
+  - application/json
+securityDefinitions:
+  apiKey:
+    type: apiKey
+    in: header
+    name: x-api-key
+security:
+  - apiKey: []
+paths:
+  /capture:
+    post:
+      operationId: CaptureNarration
+      summary: Capture a plain-language work description as draft timesheet entries
+      description: Grounds the text against the person's allowed Xero projects/tasks and stores drafts. Does not write to Xero.
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            required: [identity, text]
+            properties:
+              identity:
+                type: string
+                description: The person's email or Teams/AAD id.
+              text:
+                type: string
+                description: e.g. "2 hours on validation for the DM project today".
+      responses:
+        "200":
+          description: Draft entries (each flagged needsConfirmation if incomplete/ambiguous).
+  /week:
+    get:
+      operationId: GetWeek
+      summary: Get this week's draft entries with totals vs target
+      parameters:
+        - in: query
+          name: identity
+          required: true
+          type: string
+        - in: query
+          name: weekStart
+          required: false
+          type: string
+          description: Monday of the week, YYYY-MM-DD. Defaults to current week.
+      responses:
+        "200":
+          description: Entries, totalHours, targetHours, needsAttention count.
+  /entry/{id}:
+    patch:
+      operationId: UpdateEntry
+      summary: Edit a draft entry (project, task, duration, date, description)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            properties:
+              projectId: { type: string }
+              taskId: { type: string }
+              durationMin: { type: integer }
+              dateUtc: { type: string }
+              description: { type: string }
+      responses:
+        "200": { description: Updated entry. }
+    delete:
+      operationId: DeleteEntry
+      summary: Delete a draft entry
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200": { description: Deletion result. }
+  /submit:
+    post:
+      operationId: SubmitWeek
+      summary: Write the week's clean draft entries to Xero Projects
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            required: [identity]
+            properties:
+              identity: { type: string }
+              weekStart: { type: string, description: "Monday YYYY-MM-DD; defaults to current week." }
+      responses:
+        "200":
+          description: Per-row submit results (idempotent).
+  /projects:
+    get:
+      operationId: GetMyProjects
+      summary: List the projects and tasks this person is allowed to log against
+      parameters:
+        - in: query
+          name: identity
+          required: true
+          type: string
+      responses:
+        "200": { description: Scoped projects with tasks. }

@@ -1,0 +1,21 @@
+{
+  "name": "xero-timesheet-agent",
+  "version": "0.1.0",
+  "description": "Conversational timesheet agent: Teams narration -> grounded Xero Projects time entries",
+  "private": true,
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "auth": "node src/auth-cli.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@azure/data-tables": "^13.3.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "xero-node": "^9.0.0"
+  }
+}
