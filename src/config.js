@@ -16,13 +16,20 @@ const config = {
     tokenFile: process.env.XERO_TOKEN_FILE || './.tokens.json',
     // Scopes the org connection needs. offline_access -> refresh tokens for unattended writes.
     scopes: 'openid profile email projects projects.read offline_access',
+    // Mock mode: no real Xero connection. Seeded projects/tasks/users; writes are logged
+    // locally instead of posted. Flip to false once the org connection is authorised.
+    mock: process.env.XERO_MOCK === 'true',
+    mockTimeLog: process.env.XERO_MOCK_TIME_LOG || './.mock-xero-time.json',
   },
   llm: {
     openaiApiKey: process.env.OPENAI_API_KEY || '',
     openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
-    azureEndpoint: process.env.AZURE_OPENAI_ENDPOINT || '',
+    // Azure endpoint: strip any trailing slash so we don't build "...azure.com//openai/...".
+    azureEndpoint: (process.env.AZURE_OPENAI_ENDPOINT || '').replace(/\/+$/, ''),
     azureKey: process.env.AZURE_OPENAI_KEY || '',
     azureDeployment: process.env.AZURE_OPENAI_DEPLOYMENT || '',
+    // GA version that supports JSON-mode (response_format). Override if your resource needs another.
+    azureApiVersion: process.env.AZURE_OPENAI_API_VERSION || '2024-06-01',
   },
   agent: {
     confidenceThreshold: parseFloat(process.env.NLU_CONFIDENCE_THRESHOLD || '0.70'),

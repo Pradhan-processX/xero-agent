@@ -2,19 +2,21 @@
 const config = require('./config');
 
 // ── LLM call (OpenAI or Azure OpenAI), JSON mode, provider-flexible ──────────
-async function callLLM(systemPrompt, userMessage) {
+// messages: array of { role, content } for multi-turn, OR a plain string for single-turn
+async function callLLM(systemPrompt, messages) {
+  const turns = typeof messages === 'string'
+    ? [{ role: 'user', content: messages }]
+    : messages;
+
   const useAzure = !!config.llm.azureEndpoint;
   const url = useAzure
-    ? `${config.llm.azureEndpoint}/openai/deployments/${config.llm.azureDeployment}/chat/completions?api-version=2024-02-01`
+    ? `${config.llm.azureEndpoint}/openai/deployments/${config.llm.azureDeployment}/chat/completions?api-version=${config.llm.azureApiVersion}`
     : 'https://api.openai.com/v1/chat/completions';
   const headers = useAzure
     ? { 'api-key': config.llm.azureKey, 'Content-Type': 'application/json' }
     : { Authorization: `Bearer ${config.llm.openaiApiKey}`, 'Content-Type': 'application/json' };
   const body = {
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userMessage },
-    ],
+    messages: [{ role: 'system', content: systemPrompt }, ...turns],
     temperature: 0,
     max_tokens: 700,
     response_format: { type: 'json_object' },
@@ -38,7 +40,9 @@ function buildContextText(scopedProjects) {
 }
 
 function buildSystemPrompt(scopedProjects) {
+  const today = new Date().toISOString().slice(0, 10);
   return `You convert a person's plain-language description of their work into structured timesheet entries.
+Today's date is ${today}. Use this to resolve "today", "yesterday", "this morning" etc.
 
 You MUST only use projects and tasks from this list (these are the ONLY ones this person works on):
 ${buildContextText(scopedProjects)}
@@ -63,7 +67,9 @@ Rules:
 - Convert durations to minutes: "3 hours"=180, "30 mins"=30, "half day"=225, "full day"=450.
 - "project" and "task" MUST be copied verbatim from the list above. If you cannot confidently pick one, use null.
 - Never invent a duration. If hours are not stated, set durationMinutes to null.
-- confidence reflects how sure you are the project+task mapping is correct.`;
+- confidence reflects how sure you are the project+task mapping is correct.
+- Multi-day tasks: if the person says a task spanned multiple days (e.g. "yesterday and today", "Monday to Wednesday"), split into one entry per day. Divide total hours equally across those days unless they give a specific split. Each entry gets its own date.
+- Never create a single entry spanning more than one calendar day.`;
 }
 
 function resolveDate(token) {
@@ -79,32 +85,73 @@ function resolveDate(token) {
 
 const norm = (s) => (s || '').trim().toLowerCase();
 
+// ── Guards ────────────────────────────────────────────────────────────────────
+// >16hrs flags for confirmation but does NOT block — overnight/multi-day tasks are valid
+const LONG_DURATION_FLAG_MIN = 960;
+
+function guardDuration(durationMinutes) {
+  if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) return { error: 'no duration stated' };
+  if (durationMinutes > LONG_DURATION_FLAG_MIN) return { warning: `${Math.round(durationMinutes / 60)}hrs is unusually long — please confirm` };
+  return {};
+}
+
+function guardDateNotFuture(dateUtc) {
+  const today = new Date().toISOString().slice(0, 10);
+  if (dateUtc && dateUtc.slice(0, 10) > today) return `date ${dateUtc.slice(0, 10)} is in the future`;
+  return null;
+}
+
+function guardOutputShape(llm) {
+  if (!llm || typeof llm !== 'object') return 'LLM returned non-object';
+  if (!Array.isArray(llm.entries)) return 'LLM response missing entries array';
+  return null;
+}
+
 // ── Main: narration -> validated draft entries ──────────────────────────────
 // scopedProjects: [{ projectId, name, tasks: [{ taskId, name }] }]
-async function groundNarration(narration, scopedProjects, opts = {}) {
+// messages: string (single-turn) or [{ role, content }] array (multi-turn)
+async function groundNarration(messages, scopedProjects, opts = {}) {
   const threshold = opts.confidenceThreshold ?? config.agent.confidenceThreshold;
   let llm;
   try {
-    llm = await callLLM(buildSystemPrompt(scopedProjects), narration);
+    llm = await callLLM(buildSystemPrompt(scopedProjects), messages);
   } catch (err) {
     return { isQuery: false, entries: [], error: err.message };
   }
+
+  const shapeError = guardOutputShape(llm);
+  if (shapeError) return { isQuery: false, entries: [], error: shapeError };
   if (llm.isQuery) return { isQuery: true, entries: [] };
+
+  const narrationText = typeof messages === 'string' ? messages : (messages.at(-1)?.content || '');
 
   const entries = (llm.entries || []).map((e) => {
     const issues = [];
+
+    // Guard 1: project in allowlist
     const project = scopedProjects.find((p) => norm(p.name) === norm(e.project));
     if (!project) issues.push(e.project ? `unknown project "${e.project}"` : 'no project identified');
 
+    // Guard 2: task valid for this project
     let task = null;
     if (project) {
       task = (project.tasks || []).find((t) => norm(t.name) === norm(e.task));
       if (!task) issues.push(e.task ? `unknown task "${e.task}"` : 'no task identified');
     }
 
-    const durationMin = Number.isFinite(e.durationMinutes) && e.durationMinutes > 0 ? Math.round(e.durationMinutes) : null;
-    if (!durationMin) issues.push('no duration stated');
+    // Guard 3: duration — missing is a hard block, >16hrs is a soft warning (needsConfirmation only)
+    const rawDuration = Number.isFinite(e.durationMinutes) ? Math.round(e.durationMinutes) : null;
+    const durationGuard = guardDuration(rawDuration);
+    if (durationGuard.error) issues.push(durationGuard.error);
+    if (durationGuard.warning) issues.push(durationGuard.warning);
+    const durationMin = durationGuard.error ? null : rawDuration;
 
+    // Guard 4: date not in future
+    const resolvedDate = resolveDate(e.date);
+    const dateIssue = guardDateNotFuture(resolvedDate);
+    if (dateIssue) issues.push(dateIssue);
+
+    // Guard 5: confidence threshold
     const confidence = typeof e.confidence === 'number' ? e.confidence : 0;
     const needsConfirmation = issues.length > 0 || confidence < threshold;
 
@@ -114,8 +161,8 @@ async function groundNarration(narration, scopedProjects, opts = {}) {
       taskId: task ? task.taskId : null,
       taskName: task ? task.name : e.task || null,
       durationMin,
-      dateUtc: resolveDate(e.date),
-      description: e.description || narration.slice(0, 200),
+      dateUtc: resolvedDate,
+      description: e.description || narrationText.slice(0, 200),
       confidence,
       issues,
       needsConfirmation,

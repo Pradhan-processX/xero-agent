@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('fs');
 const config = require('./config');
+const mockData = require('./mockData');
 
 // userMap.json shape:
 // {
@@ -37,14 +38,16 @@ function resolveUser(identity) {
   if (!identity) return null;
   const id = String(identity).toLowerCase();
   const { users } = load();
-  return (
-    users.find(
-      (u) =>
-        (u.teamsId && u.teamsId.toLowerCase() === id) ||
-        (u.email && u.email.toLowerCase() === id) ||
-        (u.upn && u.upn.toLowerCase() === id)
-    ) || null
+  const found = users.find(
+    (u) =>
+      (u.teamsId && u.teamsId.toLowerCase() === id) ||
+      (u.email && u.email.toLowerCase() === id) ||
+      (u.upn && u.upn.toLowerCase() === id)
   );
+  if (found) return found;
+  // In mock mode, fall back to a default user so the flow works without a configured map.
+  if (config.xero.mock) return { ...mockData.defaultUser, email: String(identity) };
+  return null;
 }
 
 function allUsers() {

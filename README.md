@@ -30,6 +30,31 @@ See the full design in `../.claude/plans/just-thinking-can-we-warm-petal.md`.
 
 ---
 
+## Mock mode — run everything WITHOUT a Xero connection
+
+Use this to build/demo while the one-time Xero admin approval is being arranged. It seeds the real
+ProcessX project/task structure locally; the whole pipeline runs, and "submits" are logged to
+`.mock-xero-time.json` instead of posted to Xero.
+
+```powershell
+copy .env.example .env     # set XERO_MOCK=true  and  OPENAI_API_KEY=... (grounding still uses a real LLM)
+npm install
+npm start                  # /health shows "mock": true
+```
+Smoke test (no userMap needed — a default mock user is used):
+```powershell
+curl -s -X POST http://localhost:3000/capture -H "x-api-key: <API_KEY>" -H "content-type: application/json" -d "{\"identity\":\"letschat@process-x.com.au\",\"text\":\"3 hours on validation for the DM project today and 2 meetings on AI clinical\"}"
+curl -s "http://localhost:3000/week?identity=letschat@process-x.com.au" -H "x-api-key: <API_KEY>"
+curl -s -X POST http://localhost:3000/submit -H "x-api-key: <API_KEY>" -H "content-type: application/json" -d "{\"identity\":\"letschat@process-x.com.au\"}"
+```
+Inspect `.mock-xero-time.json` to see the exact payloads that *would* be posted to Xero. When the
+org is connected, set `XERO_MOCK=false` — same code now writes to Xero for real.
+
+> Note: `/capture` still calls a real LLM (OpenAI/Azure) for grounding, so set a key. Only the Xero
+> calls are mocked.
+
+---
+
 ## Phase 1 — get a sentence into Xero (run locally)
 
 ### 1. Xero app (portal)

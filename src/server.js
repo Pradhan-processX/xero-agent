@@ -18,7 +18,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get('/health', (_req, res) => res.json({ ok: true, storage: store.backend }));
+app.get('/health', (_req, res) => res.json({ ok: true, storage: store.backend, mock: config.xero.mock }));
 
 // Resolve the person + their scoped projects (allowlist) with tasks attached.
 async function scopedProjectsFor(identity) {
@@ -50,7 +50,7 @@ app.post('/capture', async (req, res, next) => {
     const { user, projects } = await scopedProjectsFor(identity);
     if (!user) return res.status(404).json({ error: 'user not mapped', identity });
 
-    const result = await groundNarration(text, projects);
+    const result = await groundNarration(text, projects); // single-turn: text string is fine here
     if (result.error) return res.status(502).json({ error: result.error });
     if (result.isQuery) return res.json({ isQuery: true, message: 'Looks like a question, not a time log.' });
 

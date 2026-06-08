@@ -1,0 +1,12 @@
+# Cursor rules
+
+Read `AGENTS.md` in the repo root for full project context — it is the single source of truth
+(architecture, Xero API facts, conventions, status).
+
+Critical:
+- Xero Projects REST API for time entries (no MCP covers Projects). `POST /Projects/{id}/Time`:
+  userId, taskId, dateUtc, duration in MINUTES.
+- One org connection + Teams-user→{xeroUserId, allowedProjectIds} map; no per-user OAuth.
+- Grounding validates LLM output against the allowed list; never invent project/task or guess
+  duration — flag instead.
+- Secrets only in .env (git-ignored); never in .env.example.
