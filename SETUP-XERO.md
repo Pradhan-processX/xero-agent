@@ -1,7 +1,7 @@
 # Xero Developer App — setup & connection
 
 Everything needed to create the Xero app, authorise the **single org connection**, and verify it
-can read projects/tasks and (later) write time. This is the work for the `xero-app` branch.
+can read projects/tasks and write time entries for the Teams timesheet agent.
 
 ## 1. Create the app (developer.xero.com)
 1. Sign in at https://developer.xero.com/ → **My Apps → New app**.

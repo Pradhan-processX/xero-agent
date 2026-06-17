@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Xero Timesheet Agent - Current Architecture</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #10131a;
+      --panel: #171c26;
+      --panel-2: #1d2430;
+      --line: #334155;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --blue: #60a5fa;
+      --green: #34d399;
+      --amber: #fbbf24;
+      --red: #f87171;
+      --violet: #a78bfa;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 32px 24px 56px;
+    }
+    header {
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 22px;
+      margin-bottom: 28px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 30px;
+      letter-spacing: 0;
+    }
+    h2 {
+      margin: 0 0 14px;
+      font-size: 18px;
+    }
+    h3 {
+      margin: 0 0 8px;
+      font-size: 15px;
+    }
+    p { margin: 0 0 10px; color: var(--muted); }
+    code {
+      color: #d8b4fe;
+      background: #111827;
+      border: 1px solid #273244;
+      border-radius: 5px;
+      padding: 1px 5px;
+      font-family: Consolas, "SF Mono", monospace;
+      font-size: 12px;
+    }
+    .meta {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+    .pill {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 5px 10px;
+      font-size: 12px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .card {
+      grid-column: span 4;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      min-height: 128px;
+    }
+    .wide { grid-column: span 12; }
+    .half { grid-column: span 6; }
+    .label {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+    .blue { color: var(--blue); }
+    .green { color: var(--green); }
+    .amber { color: var(--amber); }
+    .red { color: var(--red); }
+    .violet { color: var(--violet); }
+    ul {
+      margin: 8px 0 0;
+      padding-left: 18px;
+      color: var(--muted);
+    }
+    li { margin: 4px 0; }
+    .flow {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr;
+      align-items: stretch;
+      gap: 10px;
+    }
+    .node {
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+    }
+    .arrow {
+      display: flex;
+      align-items: center;
+      color: var(--muted);
+      font-size: 22px;
+    }
+    .sequence {
+      counter-reset: step;
+      display: grid;
+      gap: 10px;
+    }
+    .step {
+      counter-increment: step;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px 14px 12px 48px;
+      position: relative;
+    }
+    .step:before {
+      content: counter(step);
+      position: absolute;
+      left: 14px;
+      top: 12px;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: #243044;
+      color: var(--blue);
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+    }
+    .table th,
+    .table td {
+      text-align: left;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      vertical-align: top;
+      font-size: 13px;
+    }
+    .table th {
+      color: var(--text);
+      background: #202838;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+    .table tr:last-child td { border-bottom: 0; }
+    @media (max-width: 900px) {
+      .card, .half { grid-column: span 12; }
+      .flow { grid-template-columns: 1fr; }
+      .arrow { justify-content: center; transform: rotate(90deg); }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Xero Timesheet Agent - Current Architecture</h1>
+    <p>Updated 2026-06-17. This page records the current custom-agent architecture used by the repo.</p>
+    <div class="meta">
+      <span class="pill">Stage: Phase 3.7 local bot integration testing</span>
+      <span class="pill">Branch: feature/teams-bot</span>
+      <span class="pill">Runtime: Node/Express + M365 Agents SDK</span>
+      <span class="pill">LLM: Azure OpenAI via raw fetch</span>
+    </div>
+  </header>
+
+  <section class="grid">
+    <div class="card wide">
+      <div class="label blue">End-to-end flow</div>
+      <div class="flow">
+        <div class="node">
+          <h3>Microsoft Teams</h3>
+          <p>User narrates work, reviews drafts, taps Submit or Cancel.</p>
+        </div>
+        <div class="arrow">-></div>
+        <div class="node">
+          <h3>Azure Bot Service</h3>
+          <p>Channel/auth gateway. Posts activities to <code>/api/messages</code>.</p>
+        </div>
+        <div class="arrow">-></div>
+        <div class="node">
+          <h3>Node Backend</h3>
+          <p><code>server.js</code>, <code>bot.js</code>, <code>agent.js</code>, stores, Xero client.</p>
+        </div>
+        <div class="arrow">-></div>
+        <div class="node">
+          <h3>Xero Projects API</h3>
+          <p>Time entries are written only after user confirmation.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="label green">Bot shell</div>
+      <h2><code>src/bot.js</code></h2>
+      <ul>
+        <li>M365 Agents SDK handler.</li>
+        <li>Loads conversation state.</li>
+        <li>Handles Submit/Cancel while in <code>NEEDS_CONFIRMATION</code>.</li>
+        <li>Routes all normal messages to <code>agent.run()</code>.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="label violet">Agent brain</div>
+      <h2><code>src/agent.js</code></h2>
+      <ul>
+        <li>Triage: <code>gpt-4.1-mini</code>.</li>
+        <li>Reasoning: <code>gpt-4.1</code>.</li>
+        <li>Tools: <code>get_projects</code>, <code>create_draft</code>, <code>get_week_summary</code>.</li>
+        <li>Raw <code>fetch()</code>; no OpenAI SDK.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="label amber">Persistence</div>
+      <h2>Stores</h2>
+      <ul>
+        <li><code>conversationStore.js</code>: per-chat state, 30-minute TTL.</li>
+        <li><code>draftStore.js</code>: draft lifecycle and weekly summaries.</li>
+        <li><code>store.js</code>: local JSON or Azure Table Storage.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card half">
+      <div class="label blue">Message handling sequence</div>
+      <div class="sequence">
+        <div class="step">Teams sends an activity to <code>POST /api/messages</code>.</div>
+        <div class="step"><code>server.js</code> passes the turn to the M365 Agents SDK adapter.</div>
+        <div class="step"><code>bot.js</code> resolves the Teams user through <code>userMap.js</code>.</div>
+        <div class="step"><code>bot.js</code> loads conversation state from <code>conversationStore.js</code>.</div>
+        <div class="step">If waiting for confirmation, Submit/Cancel is handled in app code with no LLM call.</div>
+        <div class="step">Otherwise <code>agent.run(text, history, user)</code> handles the message.</div>
+      </div>
+    </div>
+
+    <div class="card half">
+      <div class="label violet">Agent sequence</div>
+      <div class="sequence">
+        <div class="step">Triage model returns <code>help</code>, <code>off_topic</code>, <code>review</code>, or <code>complex</code>.</div>
+        <div class="step">Help/off-topic return text immediately.</div>
+        <div class="step">Review calls <code>get_week_summary</code>.</div>
+        <div class="step">Complex messages enter the <code>gpt-4.1</code> tool-calling loop.</div>
+        <div class="step"><code>get_projects</code> fetches allowed projects/tasks for grounding.</div>
+        <div class="step"><code>create_draft</code> validates and returns draft entries or clarification errors.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card wide">
+      <div class="label red">Guardrails in app code</div>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Guard</th>
+            <th>Where</th>
+            <th>Behavior</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Project allowlist</td>
+            <td><code>agent.js</code> <code>create_draft</code></td>
+            <td>Rejects projects outside the mapped user's allowed project IDs.</td>
+          </tr>
+          <tr>
+            <td>Task validity</td>
+            <td><code>agent.js</code> <code>create_draft</code></td>
+            <td>Task must belong to the selected project.</td>
+          </tr>
+          <tr>
+            <td>Duration required</td>
+            <td><code>agent.js</code> and prompt instruction</td>
+            <td>Missing or invalid duration returns an error/clarification path.</td>
+          </tr>
+          <tr>
+            <td>Future date blocked</td>
+            <td><code>agent.js</code> <code>create_draft</code></td>
+            <td>Rejects dates after today.</td>
+          </tr>
+          <tr>
+            <td>No LLM Xero writes</td>
+            <td><code>bot.js</code> Submit handler</td>
+            <td>Xero writes only happen after Adaptive Card Submit or typed submit in confirmation state.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card half">
+      <div class="label green">Local testing status</div>
+      <ul>
+        <li>REST path tested in mock mode.</li>
+        <li>Bot path is under emulator testing.</li>
+        <li>Current server logs show triage, reasoning iterations, tool calls, and mock Xero writes.</li>
+        <li>Next logging improvement: structured bot-state events and Application Insights.</li>
+      </ul>
+    </div>
+
+    <div class="card half">
+      <div class="label amber">Azure production target</div>
+      <ul>
+        <li>Azure App Service B1 with Always On, single instance.</li>
+        <li>Azure Bot Service -> <code>/api/messages</code>.</li>
+        <li>Azure Table Storage for tokens, drafts, and conversations.</li>
+        <li>Application Insights for workflow observability.</li>
+      </ul>
+    </div>
+  </section>
+</main>
+</body>
+</html>
