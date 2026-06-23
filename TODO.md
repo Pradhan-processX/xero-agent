@@ -161,6 +161,12 @@ Check off each item as you complete it. Share screenshots with Claude after each
 
 ---
 
+## Code Improvements (Parked)
+
+- [ ] Add `try/catch` around `draftStore.addEntries()` in `bot.js:285` — if this throws, the user gets a generic adapter error instead of a useful message. Wrap it and send a clear error reply.
+
+---
+
 ## Current Status
 
 **Active branch: `feature/teams-bot`**
