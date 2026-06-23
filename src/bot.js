@@ -13,6 +13,11 @@ const telemetry = require('./telemetry');
 // Teams sends the AAD Object ID in aadObjectId — that's what userMap.teamsId stores.
 // Fall back to from.id for emulator / local testing (emulator has no aadObjectId).
 function teamsUserId(context) {
+  // Local dev only: no bot credentials means emulator, which generates random IDs each session.
+  // LOCAL_USER_IDENTITY pins it to a fixed value so userMap lookup always works.
+  if (!config.bot.clientId && process.env.LOCAL_USER_IDENTITY) {
+    return process.env.LOCAL_USER_IDENTITY;
+  }
   return context.activity.from.aadObjectId || context.activity.from.id;
 }
 

@@ -57,7 +57,7 @@ async function ensureToken() {
       config.xero.clientSecret,
       tokenSet.refresh_token
     );
-    tokenSet = refreshed;
+    tokenSet = { ...refreshed, _tenantId: existingTenant };
     await saveTokenSet(tokenSet, existingTenant);
     x.setTokenSet(tokenSet);
   }
@@ -170,7 +170,7 @@ async function createTimeEntry({ projectId, userId, taskId, dateUtc, durationMin
     const payload = {
       userId,
       taskId,
-      dateUtc: dateUtc, // ISO 8601, e.g. 2026-06-03T00:00:00Z
+      dateUtc: new Date(dateUtc),
       duration: Math.round(durationMin),
       description: description || undefined,
     };
