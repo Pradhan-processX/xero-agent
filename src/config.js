@@ -28,6 +28,8 @@ const config = {
     azureEndpoint: (process.env.AZURE_OPENAI_ENDPOINT || '').replace(/\/+$/, ''),
     azureKey: process.env.AZURE_OPENAI_KEY || '',
     azureDeployment: process.env.AZURE_OPENAI_DEPLOYMENT || '',
+    // Triage model deployment (gpt-4o-mini). Falls back to azureDeployment if not set.
+    triageDeployment: process.env.AZURE_TRIAGE_DEPLOYMENT || process.env.AZURE_OPENAI_DEPLOYMENT || '',
     // GA version that supports JSON-mode (response_format). Override if your resource needs another.
     azureApiVersion: process.env.AZURE_OPENAI_API_VERSION || '2024-06-01',
   },
@@ -46,6 +48,15 @@ const config = {
     connectionString: process.env.AZURE_STORAGE_CONNECTION_STRING || '',
     tokenTable: process.env.AZURE_TOKEN_TABLE || 'xerotokens',
     draftTable: process.env.AZURE_DRAFT_TABLE || 'drafts',
+    conversationTable: process.env.AZURE_CONVERSATION_TABLE || 'conversations',
+  },
+  // Azure Bot Service / M365 Agents SDK credentials.
+  // Names match what loadAuthConfigFromEnv() reads from env (clientId, clientSecret, tenantId).
+  // Leave unset for local dev — adapter runs without JWT validation when clientId is absent.
+  bot: {
+    clientId: process.env.clientId || '',
+    clientSecret: process.env.clientSecret || '',
+    tenantId: process.env.tenantId || '',
   },
   server: {
     port: parseInt(process.env.PORT || '3000', 10),

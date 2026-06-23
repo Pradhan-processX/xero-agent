@@ -5,6 +5,7 @@ const { XeroClient } = require('xero-node');
 const config = require('./config');
 const store = require('./store');
 const mockData = require('./mockData');
+const telemetry = require('./telemetry');
 
 const MOCK = config.xero.mock;
 
@@ -56,7 +57,7 @@ async function ensureToken() {
       config.xero.clientSecret,
       tokenSet.refresh_token
     );
-    tokenSet = refreshed;
+    tokenSet = { ...refreshed, _tenantId: existingTenant };
     await saveTokenSet(tokenSet, existingTenant);
     x.setTokenSet(tokenSet);
   }
@@ -84,18 +85,32 @@ const CACHE_TTL_MS = 60 * 60 * 1000;
 let _projectsCache = { at: 0, data: null };
 const _tasksCache = new Map(); // projectId -> { at, data }
 
+// Fetch all pages of a paginated Xero API call. Uses pageSize=500 (max) to minimise calls.
+async function fetchAllPages(fetchPage) {
+  const items = [];
+  let page = 1;
+  while (true) {
+    const res = await fetchPage(page);
+    const batch = res.body.items || [];
+    items.push(...batch);
+    const pg = res.body.pagination;
+    if (!pg || page >= (pg.pageCount || 1)) break;
+    page++;
+  }
+  return items;
+}
+
 async function getProjects() {
   if (MOCK) return mockData.projects.map(({ tasks, ...p }) => p);
   if (_projectsCache.data && Date.now() - _projectsCache.at < CACHE_TTL_MS) {
     return _projectsCache.data;
   }
   const { x, tid } = await ensureToken();
-  const res = await x.projectApi.getProjects(tid);
-  const items = (res.body.items || []).map((p) => ({
-    projectId: p.projectId,
-    name: p.name,
-    status: p.status,
-  }));
+  // states='INPROGRESS' excludes CLOSED and DRAFT projects so users never see dead projects.
+  const raw = await fetchAllPages((page) =>
+    x.projectApi.getProjects(tid, undefined, undefined, 'INPROGRESS', page, 500)
+  );
+  const items = raw.map((p) => ({ projectId: p.projectId, name: p.name, status: p.status }));
   _projectsCache = { at: Date.now(), data: items };
   return items;
 }
@@ -108,13 +123,13 @@ async function getTasks(projectId) {
   const cached = _tasksCache.get(projectId);
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.data;
   const { x, tid } = await ensureToken();
-  const res = await x.projectApi.getTasks(tid, projectId);
-  const items = (res.body.items || []).map((t) => ({
-    taskId: t.taskId,
-    name: t.name,
-    status: t.status,
-    chargeType: t.chargeType,
-  }));
+  const raw = await fetchAllPages((page) =>
+    x.projectApi.getTasks(tid, projectId, page, 500)
+  );
+  // getTasks has no server-side status filter — exclude LOCKED tasks in code.
+  const items = raw
+    .filter((t) => t.status !== 'LOCKED')
+    .map((t) => ({ taskId: t.taskId, name: t.name, status: t.status, chargeType: t.chargeType }));
   _tasksCache.set(projectId, { at: Date.now(), data: items });
   return items;
 }
@@ -127,7 +142,14 @@ async function getProjectUsers() {
 }
 
 // Create one time entry. duration is in MINUTES. idempotencyKey prevents double-posting.
-async function createTimeEntry({ projectId, userId, taskId, dateUtc, durationMin, description }, idempotencyKey) {
+// opts.operationId threads the caller's turn id into Xero telemetry events.
+async function createTimeEntry({ projectId, userId, taskId, dateUtc, durationMin, description }, idempotencyKey, opts = {}) {
+  const operationId = opts.operationId;
+  const base = {
+    operationId, source: 'xero', stage: 'create_time_entry',
+    projectId, taskId, durationMin, date: (dateUtc || '').slice(0, 10), mock: MOCK,
+  };
+
   if (MOCK) {
     const entry = {
       timeEntryId: 'mock-time-' + crypto.randomUUID(),
@@ -139,19 +161,31 @@ async function createTimeEntry({ projectId, userId, taskId, dateUtc, durationMin
     try { log = JSON.parse(fs.readFileSync(config.xero.mockTimeLog, 'utf8')); } catch {}
     log.push(entry);
     fs.writeFileSync(config.xero.mockTimeLog, JSON.stringify(log, null, 2));
-    console.log(`[MOCK] would POST /Time: ${durationMin}min  task=${taskId}  user=${userId}  date=${dateUtc}`);
+    telemetry.track('xero.time_entry.mock_created', { ...base, timeEntryId: entry.timeEntryId, success: true });
     return entry;
   }
-  const { x, tid } = await ensureToken();
-  const payload = {
-    userId,
-    taskId,
-    dateUtc: dateUtc, // ISO 8601, e.g. 2026-06-03T00:00:00Z
-    duration: Math.round(durationMin),
-    description: description || undefined,
-  };
-  const res = await x.projectApi.createTimeEntry(tid, projectId, payload, idempotencyKey);
-  return res.body;
+
+  try {
+    const { x, tid } = await ensureToken();
+    const payload = {
+      userId,
+      taskId,
+      dateUtc: new Date(dateUtc),
+      duration: Math.round(durationMin),
+      description: description || undefined,
+    };
+    const res = await x.projectApi.createTimeEntry(tid, projectId, payload, idempotencyKey);
+    telemetry.track('xero.time_entry.created', { ...base, timeEntryId: res.body?.timeEntryId, success: true });
+    return res.body;
+  } catch (err) {
+    telemetry.track('xero.time_entry.failed', {
+      ...base,
+      errorName: err.name || 'Error',
+      errorMessage: String(err.message || '').slice(0, 200),
+      success: false,
+    });
+    throw err;
+  }
 }
 
 module.exports = {

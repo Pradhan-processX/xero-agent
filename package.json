@@ -9,13 +9,16 @@
     "dev": "node --watch src/server.js",
     "auth": "node src/auth-cli.js",
     "test:xero": "node src/test-connection.js",
-    "test:llm": "node src/test-llm.js"
+    "test:llm": "node src/test-llm.js",
+    "test:bot": "node src/test-bot.js"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
     "@azure/data-tables": "^13.3.0",
+    "@microsoft/agents-hosting": "^1.5.3",
+    "applicationinsights": "^3.15.0",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "xero-node": "^9.0.0"
