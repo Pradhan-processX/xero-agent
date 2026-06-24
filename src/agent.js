@@ -199,12 +199,13 @@ async function reasoningAgent(text, history, user, operationId) {
 
 To log time:
 1. Call get_projects() to see the user's available projects and tasks.
-2. Call create_draft() for each distinct activity — one call per entry.
+2. If the user's message could match tasks in more than one project, ask which project before calling create_draft().
+3. Call create_draft() for each distinct activity — one call per entry.
    CRITICAL: Only call create_draft() if the user EXPLICITLY stated a duration.
    If no duration is mentioned, ask the user "How long did you work on that?" BEFORE calling create_draft().
    NEVER guess, assume, or infer a duration. No duration stated = ask first.
-3. If create_draft() returns an error, tell the user clearly what is missing or wrong.
-4. After all entries are drafted, confirm briefly: project, task, duration, and date for each.
+4. If create_draft() returns an error, tell the user clearly what is missing or wrong.
+5. After all entries are drafted, confirm briefly: project, task, duration, and date for each.
 
 For week summaries, call get_week_summary().
 Never ask for or mention xeroUserId — the app sets that automatically.`,
