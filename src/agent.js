@@ -39,12 +39,11 @@ async function triage(text, history) {
 Types:
 - "help": greeting, asking what the bot does, general questions about using the assistant
 - "off_topic": nothing to do with work hours, timesheets, or time tracking
-- "review": straightforward request to see logged hours ("show my week", "what did I log", "how many hours")
-- "complex": anything else — logging time, editing entries, multi-step questions, or review questions that need reasoning ("am I on track?", "do I need to catch up?")
+- "complex": anything else — logging time, reviewing hours (this week, last week, any time range), editing entries, multi-step questions
 
 When in doubt, choose "complex". If the conversation history shows the assistant asked a clarifying question, treat the user reply as "complex".
 
-Respond ONLY with: {"type":"help"} or {"type":"off_topic"} or {"type":"review"} or {"type":"complex"}`,
+Respond ONLY with: {"type":"help"} or {"type":"off_topic"} or {"type":"complex"}`,
       },
       ...recentHistory,
       { role: 'user', content: text },
@@ -54,7 +53,7 @@ Respond ONLY with: {"type":"help"} or {"type":"off_topic"} or {"type":"review"} 
 
   try {
     const parsed = JSON.parse(resp.choices[0].message.content);
-    return ['help', 'off_topic', 'review', 'complex'].includes(parsed.type)
+    return ['help', 'off_topic', 'complex'].includes(parsed.type)
       ? parsed
       : { type: 'complex' };
   } catch {
@@ -444,9 +443,6 @@ async function run(text, history, user, operationId) {
     };
   }
 
-  if (triageType === 'review') {
-    return { type: 'text', content: await handleGetWeekSummary(user) };
-  }
 
   // complex (or any unknown value): wake the reasoning model
   return reasoningAgent(text, history, user, opId);
