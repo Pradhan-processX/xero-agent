@@ -24,8 +24,11 @@ async function callAzure(deployment, messages, opts = {}) {
 
 // ── Triage: cheap classification with gpt-4o-mini ────────────────────────────
 // Falls back to the reasoning deployment if triageDeployment is not set.
-async function triage(text) {
+async function triage(text, history) {
   const deployment = config.llm.triageDeployment || config.llm.azureDeployment;
+  // Last 2 history messages give triage context for short follow-up replies
+  // (e.g. "AI clinical" after bot asked "which project?")
+  const recentHistory = Array.isArray(history) ? history.slice(-2) : [];
   const resp = await callAzure(
     deployment,
     [
@@ -39,10 +42,11 @@ Types:
 - "review": straightforward request to see logged hours ("show my week", "what did I log", "how many hours")
 - "complex": anything else — logging time, editing entries, multi-step questions, or review questions that need reasoning ("am I on track?", "do I need to catch up?")
 
-When in doubt, choose "complex".
+When in doubt, choose "complex". If the conversation history shows the assistant asked a clarifying question, treat the user reply as "complex".
 
 Respond ONLY with: {"type":"help"} or {"type":"off_topic"} or {"type":"review"} or {"type":"complex"}`,
       },
+      ...recentHistory,
       { role: 'user', content: text },
     ],
     { max_tokens: 20, response_format: { type: 'json_object' } }
@@ -396,7 +400,7 @@ async function run(text, history, user, operationId) {
   const triageStart = Date.now();
   let triageType = 'complex';
   try {
-    const t = await triage(text);
+    const t = await triage(text, history);
     triageType = t.type;
     telemetry.track('agent.triage.completed', {
       operationId: opId,
