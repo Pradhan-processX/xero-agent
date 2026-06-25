@@ -3,6 +3,7 @@ const config = require('./config');
 const xero = require('./xero');
 const draftStore = require('./draftStore');
 const telemetry = require('./telemetry');
+const dateService = require('./dateService');
 
 // ── Azure OpenAI raw fetch ────────────────────────────────────────────────────
 async function callAzure(deployment, messages, opts = {}) {
@@ -102,17 +103,6 @@ const TOOLS = [
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const norm = (s) => (s || '').trim().toLowerCase();
 
-function resolveDate(token) {
-  const today = new Date();
-  let d = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
-  if (token === 'yesterday') d.setUTCDate(d.getUTCDate() - 1);
-  else if (token && /^\d{4}-\d{2}-\d{2}$/.test(token)) {
-    const [y, m, day] = token.split('-').map(Number);
-    d = new Date(Date.UTC(y, m - 1, day));
-  }
-  return d.toISOString().replace('.000Z', 'Z');
-}
-
 function fmtDuration(minutes) {
   if (!minutes) return '?';
   const h = Math.floor(minutes / 60);
@@ -153,8 +143,8 @@ function handleCreateDraft(args, cachedProjects) {
   }
 
   // Guard 4: date not in the future
-  const dateUtc = resolveDate(args.date || 'today');
-  if (dateUtc.slice(0, 10) > new Date().toISOString().slice(0, 10)) {
+  const dateUtc = dateService.resolveDateToken(args.date || 'today');
+  if (dateService.isFutureDate(dateUtc)) {
     return { error: `Date ${dateUtc.slice(0, 10)} is in the future. Ask the user for the correct date.`, guard: 'future_date' };
   }
 
@@ -178,7 +168,7 @@ function handleCreateDraft(args, cachedProjects) {
 }
 
 async function handleGetWeekSummary(user) {
-  const weekStart = draftStore.weekStartOf(new Date().toISOString());
+  const weekStart = dateService.currentWeekStart();
   const entries = await draftStore.getWeek(user.email || user.teamsId, weekStart);
   if (entries.length === 0) return 'No time entries logged this week yet. Tell me what you worked on!';
   const totalMin = entries.reduce((s, e) => s + (e.durationMin || 0), 0);
@@ -190,11 +180,11 @@ async function handleGetWeekSummary(user) {
 
 // ── Reasoning agent: gpt-4.1 with tool-calling loop ──────────────────────────
 async function reasoningAgent(text, history, user, operationId) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = dateService.todayYmd();
   const messages = [
     {
       role: 'system',
-      content: `You are a timesheet assistant. Today is ${today}.
+      content: `You are a timesheet assistant. Today is ${today} in ${config.agent.timeZone}.
 
 To log time:
 1. Call get_projects() to see the user's available projects and tasks.

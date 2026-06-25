@@ -10,6 +10,7 @@
     "auth": "node src/auth-cli.js",
     "test:xero": "node src/test-connection.js",
     "test:llm": "node src/test-llm.js",
+    "test:dates": "node src/test-dateService.js",
     "test:bot": "node src/test-bot.js"
   },
   "engines": {
