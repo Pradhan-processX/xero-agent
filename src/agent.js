@@ -3,6 +3,7 @@ const config = require('./config');
 const xero = require('./xero');
 const draftStore = require('./draftStore');
 const telemetry = require('./telemetry');
+const dateService = require('./dateService');
 
 // ── Azure OpenAI raw fetch ────────────────────────────────────────────────────
 async function callAzure(deployment, messages, opts = {}) {
@@ -24,8 +25,11 @@ async function callAzure(deployment, messages, opts = {}) {
 
 // ── Triage: cheap classification with gpt-4o-mini ────────────────────────────
 // Falls back to the reasoning deployment if triageDeployment is not set.
-async function triage(text) {
+async function triage(text, history) {
   const deployment = config.llm.triageDeployment || config.llm.azureDeployment;
+  // Last 2 history messages give triage context for short follow-up replies
+  // (e.g. "AI clinical" after bot asked "which project?")
+  const recentHistory = Array.isArray(history) ? history.slice(-2) : [];
   const resp = await callAzure(
     deployment,
     [
@@ -36,13 +40,13 @@ async function triage(text) {
 Types:
 - "help": greeting, asking what the bot does, general questions about using the assistant
 - "off_topic": nothing to do with work hours, timesheets, or time tracking
-- "review": straightforward request to see logged hours ("show my week", "what did I log", "how many hours")
-- "complex": anything else — logging time, editing entries, multi-step questions, or review questions that need reasoning ("am I on track?", "do I need to catch up?")
+- "complex": anything else — logging time, reviewing hours (this week, last week, any time range), editing entries, multi-step questions
 
-When in doubt, choose "complex".
+When in doubt, choose "complex". If the conversation history shows the assistant asked a clarifying question, treat the user reply as "complex".
 
-Respond ONLY with: {"type":"help"} or {"type":"off_topic"} or {"type":"review"} or {"type":"complex"}`,
+Respond ONLY with: {"type":"help"} or {"type":"off_topic"} or {"type":"complex"}`,
       },
+      ...recentHistory,
       { role: 'user', content: text },
     ],
     { max_tokens: 20, response_format: { type: 'json_object' } }
@@ -50,7 +54,7 @@ Respond ONLY with: {"type":"help"} or {"type":"off_topic"} or {"type":"review"} 
 
   try {
     const parsed = JSON.parse(resp.choices[0].message.content);
-    return ['help', 'off_topic', 'review', 'complex'].includes(parsed.type)
+    return ['help', 'off_topic', 'complex'].includes(parsed.type)
       ? parsed
       : { type: 'complex' };
   } catch {
@@ -99,17 +103,6 @@ const TOOLS = [
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const norm = (s) => (s || '').trim().toLowerCase();
 
-function resolveDate(token) {
-  const today = new Date();
-  let d = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
-  if (token === 'yesterday') d.setUTCDate(d.getUTCDate() - 1);
-  else if (token && /^\d{4}-\d{2}-\d{2}$/.test(token)) {
-    const [y, m, day] = token.split('-').map(Number);
-    d = new Date(Date.UTC(y, m - 1, day));
-  }
-  return d.toISOString().replace('.000Z', 'Z');
-}
-
 function fmtDuration(minutes) {
   if (!minutes) return '?';
   const h = Math.floor(minutes / 60);
@@ -150,8 +143,8 @@ function handleCreateDraft(args, cachedProjects) {
   }
 
   // Guard 4: date not in the future
-  const dateUtc = resolveDate(args.date || 'today');
-  if (dateUtc.slice(0, 10) > new Date().toISOString().slice(0, 10)) {
+  const dateUtc = dateService.resolveDateToken(args.date || 'today');
+  if (dateService.isFutureDate(dateUtc)) {
     return { error: `Date ${dateUtc.slice(0, 10)} is in the future. Ask the user for the correct date.`, guard: 'future_date' };
   }
 
@@ -175,7 +168,7 @@ function handleCreateDraft(args, cachedProjects) {
 }
 
 async function handleGetWeekSummary(user) {
-  const weekStart = draftStore.weekStartOf(new Date().toISOString());
+  const weekStart = dateService.currentWeekStart();
   const entries = await draftStore.getWeek(user.email || user.teamsId, weekStart);
   if (entries.length === 0) return 'No time entries logged this week yet. Tell me what you worked on!';
   const totalMin = entries.reduce((s, e) => s + (e.durationMin || 0), 0);
@@ -187,20 +180,21 @@ async function handleGetWeekSummary(user) {
 
 // ── Reasoning agent: gpt-4.1 with tool-calling loop ──────────────────────────
 async function reasoningAgent(text, history, user, operationId) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = dateService.todayYmd();
   const messages = [
     {
       role: 'system',
-      content: `You are a timesheet assistant. Today is ${today}.
+      content: `You are a timesheet assistant. Today is ${today} in ${config.agent.timeZone}.
 
 To log time:
 1. Call get_projects() to see the user's available projects and tasks.
-2. Call create_draft() for each distinct activity — one call per entry.
+2. If the user's message could match tasks in more than one project, ask which project before calling create_draft().
+3. Call create_draft() for each distinct activity — one call per entry.
    CRITICAL: Only call create_draft() if the user EXPLICITLY stated a duration.
    If no duration is mentioned, ask the user "How long did you work on that?" BEFORE calling create_draft().
    NEVER guess, assume, or infer a duration. No duration stated = ask first.
-3. If create_draft() returns an error, tell the user clearly what is missing or wrong.
-4. After all entries are drafted, confirm briefly: project, task, duration, and date for each.
+4. If create_draft() returns an error, tell the user clearly what is missing or wrong.
+5. After all entries are drafted, confirm briefly: project, task, duration, and date for each.
 
 For week summaries, call get_week_summary().
 Never ask for or mention xeroUserId — the app sets that automatically.`,
@@ -396,7 +390,7 @@ async function run(text, history, user, operationId) {
   const triageStart = Date.now();
   let triageType = 'complex';
   try {
-    const t = await triage(text);
+    const t = await triage(text, history);
     triageType = t.type;
     telemetry.track('agent.triage.completed', {
       operationId: opId,
@@ -439,9 +433,6 @@ async function run(text, history, user, operationId) {
     };
   }
 
-  if (triageType === 'review') {
-    return { type: 'text', content: await handleGetWeekSummary(user) };
-  }
 
   // complex (or any unknown value): wake the reasoning model
   return reasoningAgent(text, history, user, opId);

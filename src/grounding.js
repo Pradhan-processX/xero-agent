@@ -1,5 +1,6 @@
 'use strict';
 const config = require('./config');
+const dateService = require('./dateService');
 
 // ── LLM call (OpenAI or Azure OpenAI), JSON mode, provider-flexible ──────────
 // messages: array of { role, content } for multi-turn, OR a plain string for single-turn
@@ -40,9 +41,9 @@ function buildContextText(scopedProjects) {
 }
 
 function buildSystemPrompt(scopedProjects) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = dateService.todayYmd();
   return `You convert a person's plain-language description of their work into structured timesheet entries.
-Today's date is ${today}. Use this to resolve "today", "yesterday", "this morning" etc.
+Today's date is ${today} in ${config.agent.timeZone}. Use this to resolve "today", "yesterday", "this morning" etc.
 
 You MUST only use projects and tasks from this list (these are the ONLY ones this person works on):
 ${buildContextText(scopedProjects)}
@@ -72,17 +73,6 @@ Rules:
 - Never create a single entry spanning more than one calendar day.`;
 }
 
-function resolveDate(token) {
-  const today = new Date();
-  let d = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
-  if (token === 'yesterday') d.setUTCDate(d.getUTCDate() - 1);
-  else if (token && /^\d{4}-\d{2}-\d{2}$/.test(token)) {
-    const [y, m, day] = token.split('-').map(Number);
-    d = new Date(Date.UTC(y, m - 1, day));
-  }
-  return d.toISOString().replace('.000Z', 'Z');
-}
-
 const norm = (s) => (s || '').trim().toLowerCase();
 
 // ── Guards ────────────────────────────────────────────────────────────────────
@@ -96,8 +86,7 @@ function guardDuration(durationMinutes) {
 }
 
 function guardDateNotFuture(dateUtc) {
-  const today = new Date().toISOString().slice(0, 10);
-  if (dateUtc && dateUtc.slice(0, 10) > today) return `date ${dateUtc.slice(0, 10)} is in the future`;
+  if (dateUtc && dateService.isFutureDate(dateUtc)) return `date ${dateUtc.slice(0, 10)} is in the future`;
   return null;
 }
 
@@ -147,7 +136,7 @@ async function groundNarration(messages, scopedProjects, opts = {}) {
     const durationMin = durationGuard.error ? null : rawDuration;
 
     // Guard 4: date not in future
-    const resolvedDate = resolveDate(e.date);
+    const resolvedDate = dateService.resolveDateToken(e.date);
     const dateIssue = guardDateNotFuture(resolvedDate);
     if (dateIssue) issues.push(dateIssue);
 

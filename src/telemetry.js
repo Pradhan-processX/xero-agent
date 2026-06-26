@@ -45,6 +45,7 @@ function track(name, dimensions) {
       }
     }
     _client.trackEvent({ name, properties: props });
+    _client.flush();
   } catch (err) {
     console.error('[telemetry] trackEvent error:', err.message);
   }

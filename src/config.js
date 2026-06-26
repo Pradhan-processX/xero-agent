@@ -36,6 +36,7 @@ const config = {
   agent: {
     confidenceThreshold: parseFloat(process.env.NLU_CONFIDENCE_THRESHOLD || '0.70'),
     weeklyHours: parseFloat(process.env.DEFAULT_WEEKLY_HOURS || '37.5'),
+    timeZone: process.env.DEFAULT_TIMEZONE || 'Australia/Sydney',
     userMapFile: process.env.USER_MAP_FILE || './config/userMap.json',
     // Optional: full userMap JSON as a single env var (App Service application setting),
     // so you can edit the team list without redeploying / shipping a file.

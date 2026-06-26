@@ -9,6 +9,7 @@ const store = require('./store');
 const { groundNarration } = require('./grounding');
 const { agent } = require('./bot');
 const telemetry = require('./telemetry');
+const dateService = require('./dateService');
 
 const app = express();
 app.use(express.json());
@@ -145,7 +146,7 @@ app.get('/week', async (req, res, next) => {
   try {
     const user = userMap.resolveUser(req.query.identity);
     if (!user) return res.status(404).json({ error: 'user not mapped' });
-    const weekStart = req.query.weekStart || draftStore.weekStartOf(new Date().toISOString());
+    const weekStart = req.query.weekStart || dateService.currentWeekStart();
     const entries = await draftStore.getWeek(user.email || user.teamsId, weekStart);
     const totalMin = entries.reduce((s, e) => s + (e.durationMin || 0), 0);
     telemetry.track('rest.week.completed', {
@@ -198,7 +199,7 @@ app.post('/submit', async (req, res, next) => {
     const { identity, weekStart } = req.body;
     const user = userMap.resolveUser(identity);
     if (!user) return res.status(404).json({ error: 'user not mapped' });
-    const ws = weekStart || draftStore.weekStartOf(new Date().toISOString());
+    const ws = weekStart || dateService.currentWeekStart();
     const entries = (await draftStore.getWeek(user.email || user.teamsId, ws)).filter((e) => e.status === 'draft');
 
     telemetry.track('rest.submit.started', {

@@ -1,13 +1,11 @@
 'use strict';
 const crypto = require('crypto');
 const store = require('./store');
+const dateService = require('./dateService');
 
-// Monday (UTC) of the week containing dateUtc -> "YYYY-MM-DD".
+// Monday in the configured business timezone for the date containing dateUtc.
 function weekStartOf(dateUtc) {
-  const d = new Date(dateUtc);
-  const day = (d.getUTCDay() + 6) % 7; // Mon=0..Sun=6
-  d.setUTCDate(d.getUTCDate() - day);
-  return d.toISOString().slice(0, 10);
+  return dateService.weekStartOf(dateUtc);
 }
 
 async function addEntries(userKey, entries) {
