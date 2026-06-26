@@ -93,6 +93,34 @@ function buildDraftCard(entries) {
 const SUBMIT_RE = /^\s*(yes|submit|confirm|looks good|send it|ok|yep|yeah|do it)\s*$/i;
 const CANCEL_RE = /^\s*(no|cancel|nope|discard|never mind|clear)\s*$/i;
 
+// Bot Service/Web Chat may retry a turn when the app is warming or a response is slow.
+// Track recent activity ids immediately so repeated delivery does not send duplicate replies.
+const RECENT_ACTIVITY_TTL_MS = 10 * 60 * 1000;
+const recentActivities = new Map();
+
+function pruneRecentActivities(now = Date.now()) {
+  for (const [key, at] of recentActivities) {
+    if (now - at > RECENT_ACTIVITY_TTL_MS) recentActivities.delete(key);
+  }
+}
+
+function activityDedupeKey(context) {
+  const a = context.activity || {};
+  const conversationId = a.conversation && a.conversation.id;
+  if (a.id) return `${a.channelId || 'unknown'}:${conversationId || 'none'}:${a.id}`;
+  const fallback = [a.type, a.timestamp, a.from && a.from.id, a.text || JSON.stringify(a.value || {})].join(':');
+  return `${a.channelId || 'unknown'}:${conversationId || 'none'}:${telemetry.hash(fallback)}`;
+}
+
+function isDuplicateActivity(context) {
+  const now = Date.now();
+  pruneRecentActivities(now);
+  const key = activityDedupeKey(context);
+  if (recentActivities.has(key)) return true;
+  recentActivities.set(key, now);
+  return false;
+}
+
 // ── AgentApplication ──────────────────────────────────────────────────────────
 const agent = new AgentApplication();
 
@@ -102,6 +130,31 @@ agent.onMessage(async (context) => {
   const identity = teamsUserId(context);
   const cardValue = context.activity.value;
   const text = cleanText(context);
+
+  if (!text && !cardValue) {
+    telemetry.track('bot.turn.empty_ignored', {
+      operationId,
+      source: 'bot',
+      stage: 'turn',
+      conversationHash: telemetry.hash(conversationId),
+      activityHash: telemetry.hash(context.activity.id || ''),
+      success: true,
+    });
+    return;
+  }
+
+  if (isDuplicateActivity(context)) {
+    telemetry.track('bot.turn.duplicate_ignored', {
+      operationId,
+      source: 'bot',
+      stage: 'turn',
+      conversationHash: telemetry.hash(conversationId),
+      activityHash: telemetry.hash(context.activity.id || ''),
+      textHash: telemetry.hash(text),
+      success: true,
+    });
+    return;
+  }
 
   telemetry.track('bot.turn.received', {
     operationId,
@@ -318,6 +371,17 @@ agent.onMessage(async (context) => {
 
 // Welcome message when the bot is first added to a chat
 agent.onConversationUpdate('membersAdded', async (context) => {
+  if (isDuplicateActivity(context)) {
+    telemetry.track('bot.conversation_update.duplicate_ignored', {
+      source: 'bot',
+      stage: 'conversation_update',
+      conversationHash: telemetry.hash(context.activity.conversation && context.activity.conversation.id),
+      activityHash: telemetry.hash(context.activity.id || ''),
+      success: true,
+    });
+    return;
+  }
+
   for (const member of context.activity.membersAdded || []) {
     if (member.id !== context.activity.recipient.id) {
       await context.sendActivity(MessageFactory.text(
