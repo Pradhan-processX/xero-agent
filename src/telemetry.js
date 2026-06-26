@@ -25,6 +25,11 @@ let _client = null;
       .setAutoCollectPerformance(false)
       .start();
     _client = ai.defaultClient;
+    if (!_client || typeof _client.trackEvent !== 'function') {
+      _client = null;
+      console.warn('[telemetry] Application Insights client unavailable, telemetry disabled');
+      return;
+    }
     console.log('[telemetry] Application Insights initialized');
   } catch (err) {
     console.error('[telemetry] init failed (continuing without it):', err.message);
