@@ -11,6 +11,11 @@ const { agent } = require('./bot');
 const telemetry = require('./telemetry');
 const dateService = require('./dateService');
 
+// Production is detected from NODE_ENV or — as a backstop — from WEBSITE_INSTANCE_ID,
+// which Azure App Service always injects. This way the fail-closed API-key guard below
+// stays active on Azure even if NODE_ENV was never set in the app settings.
+const IS_PRODUCTION = process.env.NODE_ENV === 'production' || !!process.env.WEBSITE_INSTANCE_ID;
+
 const app = express();
 app.use(express.json());
 
@@ -65,8 +70,28 @@ adapter.onTurnError = async (context, err) => {
 //   /api/messages — Bot Service authenticates with its own JWT (handled above)
 app.use((req, res, next) => {
   if (req.path === '/health' || req.path === '/api/messages') return next();
-  if (!config.server.apiKey) return next(); // unset = open (local dev only)
-  if (req.get('x-api-key') !== config.server.apiKey) return res.status(401).json({ error: 'unauthorized' });
+  if (!config.server.apiKey) {
+    // Fail CLOSED in production: a missing key must never silently open the REST API.
+    if (IS_PRODUCTION) {
+      console.error(
+        `[security] BLOCKED ${req.method} ${req.path}: API_KEY is not configured but the server ` +
+        'is running in production. Refusing the request. Set the API_KEY app setting in Azure.'
+      );
+      telemetry.track('security.apiKey.missing', {
+        operationId: req.operationId, source: 'server', stage: 'auth',
+        method: req.method, path: req.path, success: false,
+      });
+      return res.status(503).json({ error: 'server misconfigured: API key not set' });
+    }
+    return next(); // local dev only: no key configured = open for convenience
+  }
+  if (req.get('x-api-key') !== config.server.apiKey) {
+    telemetry.track('security.apiKey.rejected', {
+      operationId: req.operationId, source: 'server', stage: 'auth',
+      method: req.method, path: req.path, success: false,
+    });
+    return res.status(401).json({ error: 'unauthorized' });
+  }
   next();
 });
 
@@ -95,6 +120,45 @@ async function scopedProjectsFor(identity) {
     mine.map(async (p) => ({ ...p, tasks: await xero.getTasks(p.projectId) }))
   );
   return { user, projects };
+}
+
+function userStoreKey(user) {
+  return user.email || user.teamsId;
+}
+
+function requestIdentity(req) {
+  return (req.body && req.body.identity) || req.query.identity;
+}
+
+async function resolveOwnedEntry(req, res) {
+  const identity = requestIdentity(req);
+  if (!identity) {
+    res.status(400).json({ error: 'identity required' });
+    return null;
+  }
+
+  const user = userMap.resolveUser(identity);
+  if (!user) {
+    res.status(404).json({ error: 'user not mapped' });
+    return null;
+  }
+
+  const entry = await draftStore.getEntry(req.params.id);
+  if (!entry || entry.status === 'deleted') {
+    res.status(404).json({ error: 'entry not found' });
+    return null;
+  }
+
+  if (entry.userKey !== userStoreKey(user)) {
+    telemetry.track('security.entry.ownership_rejected', {
+      operationId: req.operationId, source: 'server', stage: 'entry',
+      method: req.method, entryId: req.params.id, success: false,
+    });
+    res.status(404).json({ error: 'entry not found' });
+    return null;
+  }
+
+  return { user, entry };
 }
 
 // GET /projects?identity=  -> this person's projects + tasks (debug / grounding peek)
@@ -166,6 +230,9 @@ app.get('/week', async (req, res, next) => {
 // PATCH /entry/:id { projectId?, taskId?, durationMin?, dateUtc?, description? }
 app.patch('/entry/:id', async (req, res, next) => {
   try {
+    const owned = await resolveOwnedEntry(req, res);
+    if (!owned) return;
+
     const allowed = ['projectId', 'projectName', 'taskId', 'taskName', 'durationMin', 'dateUtc', 'description'];
     const patch = {};
     for (const k of allowed) if (k in req.body) patch[k] = req.body[k];
@@ -184,6 +251,9 @@ app.patch('/entry/:id', async (req, res, next) => {
 
 app.delete('/entry/:id', async (req, res, next) => {
   try {
+    const owned = await resolveOwnedEntry(req, res);
+    if (!owned) return;
+
     const deleted = await draftStore.removeEntry(req.params.id);
     telemetry.track('rest.entry.deleted', {
       operationId: req.operationId, source: 'server', stage: 'entry',
@@ -250,10 +320,26 @@ app.use((err, _req, res, _next) => {
 
 app.listen(config.server.port, () => {
   console.log(`Xero timesheet agent listening on :${config.server.port}`);
+
+  // Surface API-key posture loudly at boot so a misconfig is obvious in the log stream.
+  if (config.server.apiKey) {
+    console.log('[security] REST API key guard: ENABLED');
+  } else if (IS_PRODUCTION) {
+    console.error(
+      '[security] REST API key guard: MISCONFIGURED — running in production with no API_KEY. ' +
+      'All REST routes (/projects, /week, /capture, /entry/:id, /submit) will return 503 until ' +
+      'the API_KEY app setting is configured in Azure.'
+    );
+  } else {
+    console.warn('[security] REST API key guard: OPEN (local dev — no API_KEY set)');
+  }
+
   telemetry.track('server.started', {
     source: 'server',
     port: config.server.port,
     storageBackend: store.backend,
     mock: config.xero.mock,
+    isProduction: IS_PRODUCTION,
+    apiKeyConfigured: !!config.server.apiKey,
   });
 });

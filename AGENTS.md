@@ -6,6 +6,25 @@ Cursor, GitHub Copilot, etc.). Keep it updated as decisions change. **Never put 
 > See `REVIEW-FINDINGS.md` (architecture review 2026-06-11) for known issues and their status.
 > Plan + build checklist: `PLAN.md` and `TODO.md`.
 
+## Current truth (2026-06-29)
+
+- Azure App Service is deployed and running: `xero-agent-api` in resource group
+  `ProcessX-AUAE-XA-RG-01`, Australia East.
+- Public host:
+  `https://xero-agent-api-ftf5csc8fghyaagc.australiaeast-01.azurewebsites.net`
+- Bot endpoint:
+  `https://xero-agent-api-ftf5csc8fghyaagc.australiaeast-01.azurewebsites.net/api/messages`
+- Health endpoint: `/health`.
+- Azure Table Storage is active in Azure when `AZURE_STORAGE_CONNECTION_STRING` is set.
+- Azure Bot Web Chat is working against the deployed app.
+- `XERO_MOCK=true` is still the deployed mode until live Xero OAuth access is available.
+- Latest deployed policy: future dates inside the current Monday-start timesheet week are allowed
+  as planned time with an explicit warning and confirmation; future dates outside the current week
+  are blocked.
+- `npm run test:dates` and `npm run test:bot` passed locally after the planned-time change.
+- Next major step: run live Xero auth, discover real Xero users/projects/tasks, create
+  `USER_MAP_JSON`, then switch Azure `XERO_MOCK=false`.
+
 ## What this project is
 A conversational **timesheet agent**: a team member narrates their work in **Microsoft Teams**
 ("3 hours on validation for the DM project today") → the agent maps it to the org's **real Xero
@@ -18,7 +37,7 @@ Teams ─► Azure Bot Service ─► THIS backend (Node/Express on Azure App Se
          (channel + auth)        bot.js (M365 Agents SDK)
                                    └── pre-filter: NEEDS_CONFIRMATION card taps (app code, no LLM)
                                  agent.js — SINGLE AGENT, TWO MODELS:
-                                   ├── triage:    gpt-4.1-mini — classify: help/off_topic/review/complex
+                                  ├── triage:    gpt-4.1-mini — classify: help/off_topic/complex
                                    └── reasoning: gpt-4.1 — tool-calling loop
                                                     tools: get_projects, create_draft, get_week_summary
                                                     guards: run in app code inside tool handlers
@@ -38,15 +57,18 @@ Key decisions:
   with its own JWT, validated by the adapter. This is already done in server.js.
 - **Agent architecture:** Single agent (`src/agent.js`), two models inside:
   - `gpt-4.1-mini`: triage every message cheaply (json_object, max_tokens 20). Returns
-    `{ type: 'help' | 'off_topic' | 'review' | 'complex' }`. ~70–80% of messages stop here.
+    `{ type: 'help' | 'off_topic' | 'complex' }`. Simple help/off-topic messages stop here.
   - `gpt-4.1`: reasoning with full tool-calling loop for complex tasks.
   - **No openai SDK** — raw `fetch()` throughout (same quality: SDK wraps the same HTTP request).
   - **Complexity ≠ intent**: even a REVIEW can be complex ("am I on track?" needs reasoning).
     Triage decides complexity, not keywords.
-- **Guards in tool handlers (not in LLM prompt):** All 4 entry-level guards run in app code inside
-  the `create_draft` tool handler. LLM cannot bypass them. Guard failures returned as error strings
+- **Guards in tool handlers (not in LLM prompt):** Entry-level guards run in app code inside the
+  `create_draft` tool handler. LLM cannot bypass them. Guard failures returned as error strings
   → LLM asks user to clarify. Never expose a `submit_to_xero` tool — Xero writes only via
   Adaptive Card button.
+- **Date policy:** dates resolve in `DEFAULT_TIMEZONE` (`Australia/Sydney`). Week starts Monday.
+  Past/today entries are allowed. Future dates inside the current week are allowed as planned time
+  with a soft warning and explicit confirmation. Future dates outside the current week are blocked.
 - **Observability:** Application Insights (`applicationinsights` npm package) — NOT Langfuse.
 
 ## Load-bearing facts (don't relearn these)
@@ -77,6 +99,7 @@ Key decisions:
   Typed submit/cancel fallbacks remain intentionally for users who reply in text instead of tapping.
 - `src/agent.js` — Built two-model agent: triage (`gpt-4.1-mini`) + reasoning with tool calling
   (`gpt-4.1`). Raw fetch(). Entry point: `run(text, history, user)`.
+- `src/dateService.js` — business-timezone date helpers, Monday week start, and current-week checks.
 - `src/grounding.js` — Single-turn LLM call + 6 guards. Used by `/capture` REST endpoint only.
   NOT the primary AI path for bot conversations (that's agent.js).
 - `src/conversationStore.js` — conversation state per conversationId: memory (dev) or Azure Table
@@ -103,11 +126,13 @@ Key decisions:
 
 ## Branches
 - `main` — primary branch.
-- `feature/teams-bot` — active development branch.
+- Preferred workflow now: feature branch → PR to `main` → tests → merge → deploy.
 
 ## Run / verify / test
 ```
 npm install
+npm run test:dates   # deterministic date/week policy tests
+npm run test:bot     # mock Xero data + real Azure OpenAI bot-path smoke tests
 npm run auth         # sign in as Standard/Adviser Xero user (one-time)
 npm run test:xero    # confirm scopes + get IDs
 npm run test:llm     # verify LLM config (Azure OpenAI) end to end
@@ -117,14 +142,11 @@ Local bot testing: run the server locally, connect the
 **Teams App Test Tool / Agents Playground** (or Bot Framework Emulator) to
 `http://localhost:3000/api/messages` — no Azure resources needed. Full plan: TODO.md Phase 3.7.
 
-## Status (as of 2026-06-17)
-- ✅ Backend code path is built: xero.js, grounding.js (`/capture` REST), draft store,
-  conversation store, storage backends, mock mode, server with `/api/messages`, bot.js
-  (M365 Agents SDK + Adaptive Cards), and agent.js (triage + reasoning tool loop).
-- ✅ `src/config.js` has `llm.triageDeployment`; set `.env` to use the Azure deployment name for
-  the triage model, currently `gpt-4.1-mini`.
-- 🔜 **CURRENT: Phase 3.7 local integration testing** — run mock mode, exercise `/api/messages`,
-  draft card, submit/cancel, review, help, and guard paths.
-- ⛔ Azure infra (App Service B1, Bot Service, Table Storage, App Insights) BLOCKED — waiting for
-  admin to create `xero-agent-rg` resource group (Australia East, Contributor for Pradhan).
-- Then: Teams manifest → Developer Portal test → admin org approval → staged rollout.
+## Status (as of 2026-06-29)
+- Backend code path is built and deployed to Azure App Service.
+- Azure Bot Web Chat works against `/api/messages`.
+- Blank Web Chat message loops are guarded in `src/bot.js`.
+- Business timezone date handling is implemented in `src/dateService.js`.
+- Planned future time inside the current week is implemented and deployed.
+- Azure remains in mock Xero mode until live Xero auth/access is available.
+- Next: live Xero auth, `npm run test:xero`, real `USER_MAP_JSON`, switch `XERO_MOCK=false`.

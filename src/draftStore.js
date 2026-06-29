@@ -30,6 +30,10 @@ async function getWeek(userKey, weekStart) {
   return all.filter((e) => e.weekStart === weekStart && e.status !== 'deleted');
 }
 
+async function getEntry(id) {
+  return store.drafts.findById(id);
+}
+
 async function updateEntry(id, patch) {
   const entry = await store.drafts.findById(id);
   if (!entry) return null;
@@ -51,4 +55,4 @@ async function markSubmitted(id, xeroTimeEntryId) {
   return updateEntry(id, { status: 'submitted', xeroTimeEntryId, submittedAt: new Date().toISOString() });
 }
 
-module.exports = { addEntries, getWeek, updateEntry, removeEntry, markSubmitted, weekStartOf };
+module.exports = { addEntries, getWeek, getEntry, updateEntry, removeEntry, markSubmitted, weekStartOf };

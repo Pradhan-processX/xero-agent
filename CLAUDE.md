@@ -11,6 +11,25 @@ Owner: Pradhan Pissay Sajjan (letschat@process-x.com.au), ProcessX (process-x.co
 
 ---
 
+## Current Truth - 2026-06-29
+
+- Azure App Service is deployed and running: `xero-agent-api`.
+- Resource group: `ProcessX-AUAE-XA-RG-01`.
+- Public host: `https://xero-agent-api-ftf5csc8fghyaagc.australiaeast-01.azurewebsites.net`.
+- Bot endpoint: `/api/messages`.
+- Health endpoint: `/health`.
+- Azure Bot Web Chat is working.
+- Azure Table Storage is active in Azure when `AZURE_STORAGE_CONNECTION_STRING` is set.
+- Deployed mode is still `XERO_MOCK=true` until live Xero OAuth access is available.
+- Planned-time policy is implemented and deployed: future dates inside the current Monday-start
+  timesheet week are allowed with a warning and explicit confirmation; future dates outside the
+  current week are blocked.
+- Local tests passed after this change: `npm run test:dates` and `npm run test:bot`.
+- Next major step: run live Xero auth, discover real Xero users/projects/tasks, set `USER_MAP_JSON`,
+  then switch Azure `XERO_MOCK=false`.
+
+---
+
 ## What Is Already Built (do not rebuild these)
 
 | File | What it does | Status |
@@ -28,13 +47,16 @@ Owner: Pradhan Pissay Sajjan (letschat@process-x.com.au), ProcessX (process-x.co
 | `src/bot.js` | M365 Agents SDK handler, conversation state, Adaptive Card confirmation, routes normal messages through `agent.run()` | Complete |
 | `xero-connector/openapi.yaml` | OpenAPI spec for Power Platform connector | Complete — kept as reference |
 
-## What Is NOT Built Yet (the work ahead)
+## What Is NOT Built Yet / Work Ahead
 
-1. **Local bot integration testing** — run the server locally, point Teams App Test Tool / Agents Playground / Bot Framework Emulator at `http://localhost:3000/api/messages`, and test log-time, review, help, submit/cancel, and guard paths.
-2. **Confirm triage deployment** — `AZURE_TRIAGE_DEPLOYMENT` should point to the actual Azure AI Foundry deployment name for `gpt-4.1-mini`.
-3. **Application Insights observability** — `applicationinsights` npm package, init in `server.js`, `trackEvent()` around triage, reasoning loop, tools, guards, draft store, and Xero writes.
-4. **Teams app manifest** — package for Teams Developer Portal.
-5. **Azure App Service deployment** — **B1 plan with Always On** (NOT Free F1 — idles out, cold start exceeds Bot Framework ~15s timeout).
+1. **Live Xero auth** — run `npm run auth` once the Xero authorising user is available.
+2. **Real Xero discovery** — run `npm run test:xero` to print real Xero users/projects/tasks.
+3. **Real user scoping** — set `USER_MAP_JSON` with Teams user IDs, `xeroUserId`, and allowed real
+   Xero project IDs.
+4. **Switch live mode** — set Azure `XERO_MOCK=false`, restart App Service, then test with real
+   projects before submitting real entries.
+5. **Teams app manifest / org rollout** — package for Teams Developer Portal and staged rollout.
+6. **Automated deployment** — PR tests, merge to `main`, GitHub Actions OIDC deploy to Azure.
 
 ---
 
@@ -71,15 +93,18 @@ DELETE     → "remove that" / "delete wednesday"
 HELP       → "hi" / "?" / anything unrecognised → show help message
 ```
 
-### 6 Guards (all must pass before draft is created)
+### Guard Policy
 ```
-1. project in user's allowlist             ✓ in grounding.js
-2. task valid for that project             ✓ in grounding.js
-3. duration: missing = hard block,         ✓ in grounding.js
+1. project in user's allowlist             ✓ app code
+2. task valid for that project             ✓ app code
+3. duration: missing = hard block,         ✓ app code
    >16hrs = soft warning (overnight valid)
-4. date is not in the future               ✓ in grounding.js
-5. LLM output is valid JSON shape          ✓ in grounding.js
-6. confidence >= NLU_CONFIDENCE_THRESHOLD  ✓ in grounding.js (default 0.70)
+4. date policy:
+   - past/today allowed
+   - future dates inside current Monday-start week allowed as planned time with warning
+   - future dates outside current week blocked
+5. LLM output/tool args validated before draft creation
+6. confidence threshold still exists for legacy /capture path
 ```
 
 ### Governance Rules (non-negotiable)
@@ -119,36 +144,25 @@ Estimated daily Xero API calls for 10-person team: ~80 (well within 5000/day lim
 ## Infrastructure Status
 ```
 Azure account:        EXISTS — process-x.com.au tenant (Azure AI Foundry models already deployed)
-App Service:          NOT CREATED YET — B1 + Always On; Express still running locally
-Azure Bot:            NOT CREATED YET
-Azure Table:          NOT CREATED YET (store.js already supports it, just needs connection string)
-Application Insights: NOT CREATED YET (decided observability tool — NOT Langfuse)
+App Service:          EXISTS — xero-agent-api, B1/Node on Azure App Service
+Azure Bot:            EXISTS — Web Chat tested against deployed /api/messages
+Azure Table:          EXISTS/ACTIVE when AZURE_STORAGE_CONNECTION_STRING is configured
+Application Insights: CONFIGURED if APPLICATIONINSIGHTS_CONNECTION_STRING is set
 Teams manifest:       NOT CREATED YET
-All Azure infra:      BLOCKED — waiting for admin to create `xero-agent-rg` resource group
+Live Xero auth:       PENDING — deployed app remains XERO_MOCK=true
 ```
 
 ---
 
 ## Build Order (follow this sequence)
 ```
-NOW (no Azure needed):
-1. Confirm `.env` has `AZURE_OPENAI_DEPLOYMENT=gpt-4.1` and
-   `AZURE_TRIAGE_DEPLOYMENT=gpt-4.1-mini` using the actual Azure deployment names.
-2. Test locally: `npm run test:llm`, mock mode (`XERO_MOCK=true`), then
-   Teams App Test Tool / Agents Playground against `http://localhost:3000/api/messages`.
-3. Exercise guard paths: missing duration, future date, project outside allowlist,
-   unknown task, >16h soft warning, unmapped user.
-
-WHEN ADMIN CREATES xero-agent-rg RESOURCE GROUP:
-4. Create Azure App Service (B1, Node 20, Always On) → deploy → public HTTPS URL
-5. Create Azure Table Storage → set AZURE_STORAGE_CONNECTION_STRING
-6. Create Azure Bot Service → point to <app-url>/api/messages → get MicrosoftAppId + Password
-7. Create Application Insights → npm install applicationinsights → init + trackEvent() calls
-
-AFTER INFRA:
-8. End-to-end test against deployed bot (real Teams via Developer Portal personal install)
-9. Create Teams app manifest → test in Developer Portal
-10. Admin approves for org → staged rollout (you → 2-3 people → whole team)
+NOW:
+1. Keep local checks green: `npm run test:dates`, `npm run test:bot`, `npm run test:llm`.
+2. Use Azure Web Chat for deployed smoke tests while XERO_MOCK=true.
+3. When Xero auth is available, run `npm run auth`, then `npm run test:xero`.
+4. Build `USER_MAP_JSON` from real Teams IDs, Xero user IDs, and allowed project IDs.
+5. Set Azure `XERO_MOCK=false`, restart, then test "what are my projects" before submitting.
+6. Create Teams app manifest → test in Developer Portal → staged org rollout.
 ```
 
 ---
@@ -166,6 +180,6 @@ AFTER INFRA:
 - First time working with Azure App Service, Azure Bot Service, Application Insights, M365 Agents SDK
 - Has Azure account (portal.azure.com, process-x.com.au tenant)
 - Has Teams access, can ask Teams admin to approve org apps
-- Express app runs locally, not yet deployed
+- Express app is deployed to Azure and can also run locally
 - Familiar with Teams Developer Portal and app manifest approval flow
 - Go step by step, one instruction at a time, with screenshots expected between steps
