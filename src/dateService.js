@@ -85,10 +85,15 @@ function isFutureDate(value, timeZone = DEFAULT_TIME_ZONE, now = new Date()) {
   return ymdFromInput(value, timeZone, now) > todayYmd(timeZone, now);
 }
 
+function isInCurrentWeek(value, timeZone = DEFAULT_TIME_ZONE, now = new Date()) {
+  return weekStartOf(value, timeZone, now) === currentWeekStart(timeZone, now);
+}
+
 module.exports = {
   DEFAULT_TIME_ZONE,
   addDays,
   currentWeekStart,
+  isInCurrentWeek,
   isFutureDate,
   resolveDateToken,
   todayYmd,

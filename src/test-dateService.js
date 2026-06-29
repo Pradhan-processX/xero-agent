@@ -34,5 +34,13 @@ assert.strictEqual(
   dateService.isFutureDate('2026-06-26T00:00:00Z', tz, sydneyMorningUtc),
   true
 );
+assert.strictEqual(
+  dateService.isInCurrentWeek('2026-06-26T00:00:00Z', tz, sydneyMorningUtc),
+  true
+);
+assert.strictEqual(
+  dateService.isInCurrentWeek('2026-06-29T00:00:00Z', tz, sydneyMorningUtc),
+  false
+);
 
 console.log('dateService tests passed');

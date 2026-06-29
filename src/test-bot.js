@@ -93,22 +93,29 @@ async function main() {
     check('asks for duration', r, (r) => /how long|duration|hours|time/i.test(r.content));
   });
 
-  await test('7. Guard: future date', '3h on ProcessX TranXform Project (DM) Development tomorrow', (r) => {
-    check('type=text',          r, (r) => r.type === 'text');
-    check('mentions future date', r, (r) => /future|tomorrow|date/i.test(r.content));
+  await test('7. Soft warning: future date inside current week', '3h on ProcessX TranXform Project (DM) Development tomorrow', (r) => {
+    check('type=card',          r, (r) => r.type === 'card');
+    check('has warning',        r, (r) => r.entries[0].issues.length > 0);
+    check('future warning',     r, (r) => /future date in the current week/i.test(r.entries[0].issues.join(' ')));
+    check('needsConfirmation',  r, (r) => r.entries[0].needsConfirmation === true);
   });
 
-  await test('8. Guard: unknown project', '3h on FakeProject XYZ today', (r) => {
+  await test('8. Guard: future date outside current week', '3h on ProcessX TranXform Project (DM) Development next Monday', (r) => {
+    check('type=text',          r, (r) => r.type === 'text');
+    check('mentions date issue', r, (r) => /outside|current week|date/i.test(r.content));
+  });
+
+  await test('9. Guard: unknown project', '3h on FakeProject XYZ today', (r) => {
     check('type=text',             r, (r) => r.type === 'text');
     check('mentions not found', r, (r) => /not found|available|project/i.test(r.content));
   });
 
-  await test('9. Guard: unknown task', '3h on ProcessX TranXform Project (DM) FakeTask today', (r) => {
+  await test('10. Guard: unknown task', '3h on ProcessX TranXform Project (DM) FakeTask today', (r) => {
     check('type=text',          r, (r) => r.type === 'text');
     check('mentions task issue', r, (r) => /task|not found|available/i.test(r.content));
   });
 
-  await test('10. Soft warning: >16h duration', '20h on ProcessX TranXform Project (DM) Development today', (r) => {
+  await test('11. Soft warning: >16h duration', '20h on ProcessX TranXform Project (DM) Development today', (r) => {
     check('type=card',          r, (r) => r.type === 'card');
     check('has warning',        r, (r) => r.entries[0].issues.length > 0);
     check('needsConfirmation',  r, (r) => r.entries[0].needsConfirmation === true);

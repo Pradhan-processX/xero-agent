@@ -110,6 +110,10 @@ function fmtDuration(minutes) {
   return h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`;
 }
 
+function futureWithinWeekIssue(dateUtc) {
+  return `Future date in the current week (${dateUtc.slice(0, 10)}) - please confirm this planned time`;
+}
+
 // ── Tool handlers (guards run here in app code, not inside the LLM) ───────────
 
 async function handleGetProjects(user) {
@@ -142,14 +146,18 @@ function handleCreateDraft(args, cachedProjects) {
     return { error: 'Duration is missing or invalid. Ask the user how long they worked.', guard: 'duration_required' };
   }
 
-  // Guard 4: date not in the future
+  // Guard 4: future dates are allowed only inside the current timesheet week,
+  // and only as a soft warning that the user must confirm on the draft card.
   const dateUtc = dateService.resolveDateToken(args.date || 'today');
   if (dateService.isFutureDate(dateUtc)) {
-    return { error: `Date ${dateUtc.slice(0, 10)} is in the future. Ask the user for the correct date.`, guard: 'future_date' };
+    if (!dateService.isInCurrentWeek(dateUtc)) {
+      return { error: `Date ${dateUtc.slice(0, 10)} is outside the current week. Ask the user for the correct date.`, guard: 'future_date_outside_current_week' };
+    }
   }
 
   const issues = [];
   if (durationMin > 960) issues.push(`${Math.round(durationMin / 60)} hours is unusually long — please confirm`);
+  if (dateService.isFutureDate(dateUtc)) issues.push(futureWithinWeekIssue(dateUtc));
 
   return {
     ok: true,
@@ -181,10 +189,11 @@ async function handleGetWeekSummary(user) {
 // ── Reasoning agent: gpt-4.1 with tool-calling loop ──────────────────────────
 async function reasoningAgent(text, history, user, operationId) {
   const today = dateService.todayYmd();
+  const weekStart = dateService.currentWeekStart();
   const messages = [
     {
       role: 'system',
-      content: `You are a timesheet assistant. Today is ${today} in ${config.agent.timeZone}.
+      content: `You are a timesheet assistant. Today is ${today} in ${config.agent.timeZone}. The current timesheet week starts on ${weekStart} and uses Monday as the week start.
 
 To log time:
 1. Call get_projects() to see the user's available projects and tasks.
@@ -193,6 +202,8 @@ To log time:
    CRITICAL: Only call create_draft() if the user EXPLICITLY stated a duration.
    If no duration is mentioned, ask the user "How long did you work on that?" BEFORE calling create_draft().
    NEVER guess, assume, or infer a duration. No duration stated = ask first.
+   If the user asks for "this week", "the whole week", or gives a per-day split without another date range, use the current timesheet week that starts on ${weekStart}.
+   Future dates inside the current timesheet week are allowed as planned time, but future dates outside the current week are not allowed.
 4. If create_draft() returns an error, tell the user clearly what is missing or wrong.
 5. After all entries are drafted, confirm briefly: project, task, duration, and date for each.
 

@@ -38,6 +38,10 @@ function fmtDuration(minutes) {
 }
 
 // ── Adaptive Card builder ─────────────────────────────────────────────────────
+function isSoftIssue(issue) {
+  return issue.includes('unusually long') || issue.includes('Future date in the current week');
+}
+
 function buildDraftCard(entries) {
   const entryBlocks = entries.map((e) => {
     const hasIssues = e.issues && e.issues.length > 0;
@@ -68,7 +72,10 @@ function buildDraftCard(entries) {
   });
 
   const hasBlockingIssues = entries.some(
-    (e) => e.needsConfirmation && e.issues && e.issues.some((i) => !i.includes('unusually long'))
+    (e) => e.needsConfirmation && e.issues && e.issues.some((i) => !isSoftIssue(i))
+  );
+  const hasPlannedTime = entries.some(
+    (e) => (e.issues || []).some((i) => i.includes('Future date in the current week'))
   );
 
   return CardFactory.adaptiveCard({
@@ -79,11 +86,13 @@ function buildDraftCard(entries) {
       { type: 'TextBlock', text: 'Draft time entries', weight: 'bolder', size: 'medium' },
       ...(hasBlockingIssues
         ? [{ type: 'TextBlock', text: 'Some entries have issues — fix them before submitting.', color: 'attention', wrap: true }]
+        : hasPlannedTime
+          ? [{ type: 'TextBlock', text: 'Some entries are planned for future dates this week. Review before submitting.', color: 'attention', wrap: true }]
         : [{ type: 'TextBlock', text: 'Review and submit when ready.', isSubtle: true }]),
       { type: 'Container', separator: true, items: entryBlocks },
     ],
     actions: [
-      { type: 'Action.Submit', title: '✓ Submit to Xero', data: { intent: 'SUBMIT' } },
+      { type: 'Action.Submit', title: hasPlannedTime ? '✓ Submit planned time to Xero' : '✓ Submit to Xero', data: { intent: 'SUBMIT' } },
       { type: 'Action.Submit', title: '✕ Cancel', data: { intent: 'CANCEL' } },
     ],
   });
@@ -221,9 +230,10 @@ agent.onMessage(async (context) => {
 
     if (intent === 'SUBMIT') {
       const entries = state.pendingEntries || [];
-      // Soft-warning entries (only "unusually long") are submittable; hard-blocked ones are not.
+      // Soft-warning entries are submittable after the user confirms the card;
+      // hard-blocked entries are not.
       const submittable = entries.filter(
-        (e) => !e.needsConfirmation || (e.issues || []).every((i) => i.includes('unusually long'))
+        (e) => !e.needsConfirmation || (e.issues || []).every(isSoftIssue)
       );
 
       if (submittable.length === 0) {
