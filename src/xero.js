@@ -85,6 +85,37 @@ const CACHE_TTL_MS = 60 * 60 * 1000;
 let _projectsCache = { at: 0, data: null };
 const _tasksCache = new Map(); // projectId -> { at, data }
 
+function readMockTimeLog() {
+  try { return JSON.parse(fs.readFileSync(config.xero.mockTimeLog, 'utf8')); } catch { return []; }
+}
+
+function writeMockTimeLog(log) {
+  fs.writeFileSync(config.xero.mockTimeLog, JSON.stringify(log, null, 2));
+}
+
+function toIsoDateString(value) {
+  if (!value) return '';
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
+}
+
+function toYmd(value) {
+  return toIsoDateString(value).slice(0, 10);
+}
+
+function mapTimeEntry(entry) {
+  return {
+    timeEntryId: entry.timeEntryId,
+    projectId: entry.projectId,
+    userId: entry.userId,
+    taskId: entry.taskId,
+    dateUtc: toIsoDateString(entry.dateUtc),
+    duration: entry.duration,
+    description: entry.description || '',
+    status: entry.status || 'ACTIVE',
+  };
+}
+
 // Fetch all pages of a paginated Xero API call. Uses pageSize=500 (max) to minimise calls.
 async function fetchAllPages(fetchPage) {
   const items = [];
@@ -141,6 +172,50 @@ async function getProjectUsers() {
   return (res.body.items || []).map((u) => ({ userId: u.userId, name: u.name, email: u.email }));
 }
 
+async function getTimeEntries({
+  projectId,
+  userId,
+  taskId,
+  states = ['ACTIVE'],
+  dateAfterUtc,
+  dateBeforeUtc,
+} = {}) {
+  if (!projectId) throw new Error('projectId is required to list time entries');
+
+  if (MOCK) {
+    const allowedStates = new Set((states || ['ACTIVE']).map((s) => String(s).toUpperCase()));
+    const from = dateAfterUtc ? toYmd(dateAfterUtc) : '';
+    const to = dateBeforeUtc ? toYmd(dateBeforeUtc) : '';
+    return readMockTimeLog()
+      .map(mapTimeEntry)
+      .filter((e) => e.projectId === projectId)
+      .filter((e) => !userId || e.userId === userId)
+      .filter((e) => !taskId || e.taskId === taskId)
+      .filter((e) => allowedStates.has(String(e.status || 'ACTIVE').toUpperCase()))
+      .filter((e) => !from || toYmd(e.dateUtc) >= from)
+      .filter((e) => !to || toYmd(e.dateUtc) <= to);
+  }
+
+  const { x, tid } = await ensureToken();
+  const raw = await fetchAllPages((page) =>
+    x.projectApi.getTimeEntries(
+      tid,
+      projectId,
+      userId,
+      taskId,
+      undefined,
+      undefined,
+      page,
+      500,
+      states,
+      undefined,
+      dateAfterUtc ? new Date(dateAfterUtc) : undefined,
+      dateBeforeUtc ? new Date(dateBeforeUtc) : undefined
+    )
+  );
+  return raw.map(mapTimeEntry);
+}
+
 // Create one time entry. duration is in MINUTES. idempotencyKey prevents double-posting.
 // opts.operationId threads the caller's turn id into Xero telemetry events.
 async function createTimeEntry({ projectId, userId, taskId, dateUtc, durationMin, description }, idempotencyKey, opts = {}) {
@@ -154,13 +229,12 @@ async function createTimeEntry({ projectId, userId, taskId, dateUtc, durationMin
     const entry = {
       timeEntryId: 'mock-time-' + crypto.randomUUID(),
       projectId, userId, taskId, dateUtc, duration: Math.round(durationMin), description,
-      idempotencyKey, loggedAt: new Date().toISOString(),
+      status: 'ACTIVE', idempotencyKey, loggedAt: new Date().toISOString(),
     };
     // Append to a local log so you can inspect exactly what WOULD be posted to Xero.
-    let log = [];
-    try { log = JSON.parse(fs.readFileSync(config.xero.mockTimeLog, 'utf8')); } catch {}
+    const log = readMockTimeLog();
     log.push(entry);
-    fs.writeFileSync(config.xero.mockTimeLog, JSON.stringify(log, null, 2));
+    writeMockTimeLog(log);
     telemetry.track('xero.time_entry.mock_created', { ...base, timeEntryId: entry.timeEntryId, success: true });
     return entry;
   }
@@ -188,12 +262,102 @@ async function createTimeEntry({ projectId, userId, taskId, dateUtc, durationMin
   }
 }
 
+async function updateTimeEntry({ projectId, timeEntryId, userId, taskId, dateUtc, durationMin, description }, idempotencyKey, opts = {}) {
+  const operationId = opts.operationId;
+  const base = {
+    operationId, source: 'xero', stage: 'update_time_entry',
+    projectId, taskId, timeEntryId, durationMin, date: (dateUtc || '').slice(0, 10), mock: MOCK,
+  };
+
+  if (!projectId || !timeEntryId) throw new Error('projectId and timeEntryId are required to update a time entry');
+
+  if (MOCK) {
+    const log = readMockTimeLog();
+    const i = log.findIndex((e) => e.projectId === projectId && e.timeEntryId === timeEntryId && e.status !== 'DELETED');
+    if (i < 0) throw new Error(`Mock time entry ${timeEntryId} not found`);
+    log[i] = {
+      ...log[i],
+      userId,
+      taskId,
+      dateUtc,
+      duration: Math.round(durationMin),
+      description,
+      status: 'ACTIVE',
+      idempotencyKey,
+      updatedAt: new Date().toISOString(),
+    };
+    writeMockTimeLog(log);
+    telemetry.track('xero.time_entry.mock_updated', { ...base, success: true });
+    return mapTimeEntry(log[i]);
+  }
+
+  try {
+    const { x, tid } = await ensureToken();
+    const payload = {
+      userId,
+      taskId,
+      dateUtc: new Date(dateUtc),
+      duration: Math.round(durationMin),
+      description: description || undefined,
+    };
+    const res = await x.projectApi.updateTimeEntry(tid, projectId, timeEntryId, payload, idempotencyKey);
+    telemetry.track('xero.time_entry.updated', { ...base, success: true });
+    return res.body || { timeEntryId, projectId, userId, taskId, dateUtc, duration: Math.round(durationMin), description };
+  } catch (err) {
+    telemetry.track('xero.time_entry.update_failed', {
+      ...base,
+      errorName: err.name || 'Error',
+      errorMessage: String(err.message || '').slice(0, 200),
+      success: false,
+    });
+    throw err;
+  }
+}
+
+async function deleteTimeEntry(projectId, timeEntryId, opts = {}) {
+  const operationId = opts.operationId;
+  const base = {
+    operationId, source: 'xero', stage: 'delete_time_entry',
+    projectId, timeEntryId, mock: MOCK,
+  };
+
+  if (!projectId || !timeEntryId) throw new Error('projectId and timeEntryId are required to delete a time entry');
+
+  if (MOCK) {
+    const log = readMockTimeLog();
+    const i = log.findIndex((e) => e.projectId === projectId && e.timeEntryId === timeEntryId && e.status !== 'DELETED');
+    if (i < 0) throw new Error(`Mock time entry ${timeEntryId} not found`);
+    log[i] = { ...log[i], status: 'DELETED', deletedAt: new Date().toISOString() };
+    writeMockTimeLog(log);
+    telemetry.track('xero.time_entry.mock_deleted', { ...base, success: true });
+    return { deleted: true, timeEntryId };
+  }
+
+  try {
+    const { x, tid } = await ensureToken();
+    await x.projectApi.deleteTimeEntry(tid, projectId, timeEntryId);
+    telemetry.track('xero.time_entry.deleted', { ...base, success: true });
+    return { deleted: true, timeEntryId };
+  } catch (err) {
+    telemetry.track('xero.time_entry.delete_failed', {
+      ...base,
+      errorName: err.name || 'Error',
+      errorMessage: String(err.message || '').slice(0, 200),
+      success: false,
+    });
+    throw err;
+  }
+}
+
 module.exports = {
   buildConsentUrl,
   handleCallback,
   getProjects,
   getTasks,
   getProjectUsers,
+  getTimeEntries,
   createTimeEntry,
+  updateTimeEntry,
+  deleteTimeEntry,
   _internal: { loadTokenSet, saveTokenSet },
 };

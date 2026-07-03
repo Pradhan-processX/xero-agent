@@ -98,6 +98,110 @@ function buildDraftCard(entries) {
   });
 }
 
+function buildMutationCard(mutation) {
+  const isDelete = mutation.action === 'delete';
+  const title = isDelete ? 'Confirm time entry delete' : 'Confirm time entry update';
+  const changeText = isDelete
+    ? `${fmtDuration(mutation.currentDurationMin)} will be deleted`
+    : `${fmtDuration(mutation.currentDurationMin)} → ${fmtDuration(mutation.newDurationMin)}`;
+
+  return CardFactory.adaptiveCard({
+    type: 'AdaptiveCard',
+    $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
+    version: '1.3',
+    body: [
+      { type: 'TextBlock', text: title, weight: 'bolder', size: 'medium' },
+      { type: 'TextBlock', text: 'Review before changing Xero.', color: 'attention', wrap: true },
+      {
+        type: 'Container',
+        style: isDelete ? 'attention' : 'good',
+        separator: true,
+        items: [
+          { type: 'TextBlock', text: `**${mutation.projectName || '?'}** › ${mutation.taskName || '?'}`, wrap: true },
+          { type: 'TextBlock', text: `${changeText} · ${(mutation.dateUtc || '').slice(0, 10) || '?'}`, isSubtle: true, spacing: 'none' },
+          ...(mutation.reason ? [{ type: 'TextBlock', text: mutation.reason, isSubtle: true, wrap: true, spacing: 'none' }] : []),
+        ],
+      },
+    ],
+    actions: [
+      { type: 'Action.Submit', title: isDelete ? '✓ Delete time entry' : '✓ Update time entry', data: { intent: 'SUBMIT' } },
+      { type: 'Action.Submit', title: '✕ Cancel', data: { intent: 'CANCEL' } },
+    ],
+  });
+}
+
+async function discardPendingDrafts(entries, operationId) {
+  let deletedCount = 0;
+  for (const e of entries || []) {
+    if (!e || !e.id) continue;
+    try {
+      const deleted = await draftStore.removeEntry(e.id);
+      if (deleted) deletedCount++;
+    } catch (err) {
+      telemetry.track('draft.entry.discard_failed', {
+        operationId, source: 'bot', stage: 'discard',
+        entryId: e.id, errorName: err.name || 'Error', success: false,
+      });
+    }
+  }
+  if (deletedCount > 0) {
+    telemetry.track('draft.entries.discarded', {
+      operationId, source: 'bot', stage: 'discard',
+      deletedCount, success: true,
+    });
+  }
+  return deletedCount;
+}
+
+async function applyPendingMutation(mutation, user, operationId) {
+  if (!mutation) throw new Error('No pending edit to apply.');
+  if (mutation.userId && mutation.userId !== user.xeroUserId) {
+    throw new Error('This edit does not belong to the signed-in Xero user.');
+  }
+
+  const isDraftOnly = mutation.source === 'draft';
+  if (mutation.action === 'delete') {
+    if (!isDraftOnly) {
+      if (!mutation.xeroTimeEntryId) throw new Error('Missing Xero time entry id for submitted entry.');
+      await xero.deleteTimeEntry(mutation.projectId, mutation.xeroTimeEntryId, { operationId });
+    }
+    if (mutation.localEntryId) await draftStore.removeEntry(mutation.localEntryId);
+    return `Deleted ${mutation.projectName} › ${mutation.taskName}: ${fmtDuration(mutation.currentDurationMin)} on ${mutation.dateUtc.slice(0, 10)}.`;
+  }
+
+  if (mutation.action === 'update') {
+    if (!Number.isFinite(mutation.newDurationMin) || mutation.newDurationMin <= 0) {
+      throw new Error('Invalid target duration for update.');
+    }
+    if (!isDraftOnly) {
+      if (!mutation.xeroTimeEntryId) throw new Error('Missing Xero time entry id for submitted entry.');
+      await xero.updateTimeEntry(
+        {
+          projectId: mutation.projectId,
+          timeEntryId: mutation.xeroTimeEntryId,
+          userId: user.xeroUserId,
+          taskId: mutation.taskId,
+          dateUtc: mutation.dateUtc,
+          durationMin: mutation.newDurationMin,
+          description: mutation.description,
+        },
+        mutation.id,
+        { operationId }
+      );
+    }
+    if (mutation.localEntryId) {
+      await draftStore.updateEntry(mutation.localEntryId, {
+        durationMin: mutation.newDurationMin,
+        needsConfirmation: false,
+        issues: [],
+      });
+    }
+    return `Updated ${mutation.projectName} › ${mutation.taskName} on ${mutation.dateUtc.slice(0, 10)} from ${fmtDuration(mutation.currentDurationMin)} to ${fmtDuration(mutation.newDurationMin)}.`;
+  }
+
+  throw new Error(`Unknown edit action: ${mutation.action}`);
+}
+
 // Text fallbacks for when the user types instead of tapping the card buttons.
 const SUBMIT_RE = /^\s*(yes|submit|confirm|looks good|send it|ok|yep|yeah|do it)\s*$/i;
 const CANCEL_RE = /^\s*(no|cancel|nope|discard|never mind|clear)\s*$/i;
@@ -199,6 +303,7 @@ agent.onMessage(async (context) => {
     conversationState: 'IDLE',
     history: [],
     pendingEntries: [],
+    pendingMutation: null,
   };
 
   telemetry.track('bot.state.loaded', {
@@ -208,6 +313,7 @@ agent.onMessage(async (context) => {
     conversationHash: telemetry.hash(conversationId),
     stateBefore: state.conversationState,
     pendingEntryCount: (state.pendingEntries || []).length,
+    hasPendingMutation: !!state.pendingMutation,
     historyLength: (state.history || []).length,
   });
 
@@ -225,10 +331,45 @@ agent.onMessage(async (context) => {
         intentSource: cardValue?.intent ? 'card' : 'typed',
         stateBefore: 'NEEDS_CONFIRMATION',
         pendingEntryCount: (state.pendingEntries || []).length,
+        hasPendingMutation: !!state.pendingMutation,
       });
     }
 
     if (intent === 'SUBMIT') {
+      if (state.pendingMutation) {
+        try {
+          const message = await applyPendingMutation(state.pendingMutation, user, operationId);
+          telemetry.track('bot.confirmation.mutation_applied', {
+            operationId,
+            source: 'bot',
+            stage: 'confirmation',
+            action: state.pendingMutation.action,
+            mutationSource: state.pendingMutation.source,
+            output: { stateAfter: 'IDLE', mock: config.xero.mock },
+            success: true,
+          });
+          await conversationStore.clear(conversationId);
+          telemetry.track('conversation.cleared', {
+            operationId, source: 'bot',
+            conversationHash: telemetry.hash(conversationId), success: true,
+          });
+          await context.sendActivity(MessageFactory.text(message));
+          telemetry.track('bot.reply.sent', { operationId, source: 'bot', stage: 'reply', success: true });
+        } catch (err) {
+          telemetry.track('bot.confirmation.mutation_failed', {
+            operationId,
+            source: 'bot',
+            stage: 'confirmation',
+            action: state.pendingMutation.action,
+            errorName: err.name || 'Error',
+            success: false,
+          });
+          await context.sendActivity(MessageFactory.text(`I could not apply that change: ${err.message}`));
+          telemetry.track('bot.reply.sent', { operationId, source: 'bot', stage: 'reply', success: false });
+        }
+        return;
+      }
+
       const entries = state.pendingEntries || [];
       // Soft-warning entries are submittable after the user confirms the card;
       // hard-blocked entries are not.
@@ -305,6 +446,7 @@ agent.onMessage(async (context) => {
     }
 
     if (intent === 'CANCEL') {
+      const discardedDraftCount = await discardPendingDrafts(state.pendingEntries || [], operationId);
       telemetry.track('bot.confirmation.cancelled', {
         operationId,
         source: 'bot',
@@ -312,9 +454,10 @@ agent.onMessage(async (context) => {
         input: {
           stateBefore: 'NEEDS_CONFIRMATION',
           pendingEntryCount: (state.pendingEntries || []).length,
+          hasPendingMutation: !!state.pendingMutation,
           intentSource: cardValue?.intent ? 'card' : 'typed',
         },
-        output: { stateAfter: 'IDLE', conversationCleared: true, xeroWriteAttempted: false },
+        output: { stateAfter: 'IDLE', conversationCleared: true, xeroWriteAttempted: false, discardedDraftCount },
         success: true,
       });
       await conversationStore.clear(conversationId);
@@ -322,13 +465,18 @@ agent.onMessage(async (context) => {
         operationId, source: 'bot',
         conversationHash: telemetry.hash(conversationId), success: true,
       });
-      await context.sendActivity(MessageFactory.text('Cancelled. Nothing was submitted to Xero.'));
+      await context.sendActivity(MessageFactory.text(
+        state.pendingMutation
+          ? 'Cancelled. No changes were made to Xero.'
+          : 'Cancelled. Nothing was submitted to Xero.'
+      ));
       telemetry.track('bot.reply.sent', { operationId, source: 'bot', stage: 'reply', success: true });
       return;
     }
 
     // Any other message while waiting for confirmation — treat as a new request
-    state = { conversationState: 'IDLE', history: state.history, pendingEntries: [] };
+    await discardPendingDrafts(state.pendingEntries || [], operationId);
+    state = { conversationState: 'IDLE', history: state.history, pendingEntries: [], pendingMutation: null };
   }
 
   // ── Route everything else through the agent ───────────────────────────────────
@@ -358,11 +506,32 @@ agent.onMessage(async (context) => {
         { role: 'assistant', content: 'Showing draft for confirmation.' },
       ],
       pendingEntries: saved,
+      pendingMutation: null,
     });
     await context.sendActivity({ type: 'message', attachments: [buildDraftCard(saved)] });
     telemetry.track('bot.card.sent', {
       operationId, source: 'bot', stage: 'card',
       entryCount: saved.length, success: true,
+    });
+  } else if (result.type === 'mutation_card') {
+    await conversationStore.set(conversationId, {
+      conversationState: 'NEEDS_CONFIRMATION',
+      history: [
+        ...(state.history || []),
+        { role: 'user', content: text },
+        { role: 'assistant', content: `Showing edit confirmation: ${result.mutation.summary}` },
+      ],
+      pendingEntries: [],
+      pendingMutation: result.mutation,
+    });
+    await context.sendActivity({ type: 'message', attachments: [buildMutationCard(result.mutation)] });
+    telemetry.track('bot.mutation_card.sent', {
+      operationId,
+      source: 'bot',
+      stage: 'card',
+      action: result.mutation.action,
+      mutationSource: result.mutation.source,
+      success: true,
     });
   } else {
     await conversationStore.set(conversationId, {
@@ -373,6 +542,7 @@ agent.onMessage(async (context) => {
         { role: 'assistant', content: result.content },
       ],
       pendingEntries: [],
+      pendingMutation: null,
     });
     await context.sendActivity(MessageFactory.text(result.content));
     telemetry.track('bot.reply.sent', { operationId, source: 'bot', stage: 'reply', success: true });
@@ -401,4 +571,11 @@ agent.onConversationUpdate('membersAdded', async (context) => {
   }
 });
 
-module.exports = { agent };
+module.exports = {
+  agent,
+  _internal: {
+    applyPendingMutation,
+    discardPendingDrafts,
+    buildMutationCard,
+  },
+};
