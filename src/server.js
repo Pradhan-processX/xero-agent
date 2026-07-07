@@ -10,6 +10,7 @@ const { groundNarration } = require('./grounding');
 const { agent } = require('./bot');
 const telemetry = require('./telemetry');
 const dateService = require('./dateService');
+const weekSummary = require('./weekSummary');
 
 // Production is detected from NODE_ENV or — as a backstop — from WEBSITE_INSTANCE_ID,
 // which Azure App Service always injects. This way the fail-closed API-key guard below
@@ -205,24 +206,19 @@ app.post('/capture', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// GET /week?identity=&weekStart=YYYY-MM-DD -> drafts + totals vs weekly target
+// GET /week?identity=&weekStart=YYYY-MM-DD -> Xero source-of-truth week summary.
 app.get('/week', async (req, res, next) => {
   try {
     const user = userMap.resolveUser(req.query.identity);
     if (!user) return res.status(404).json({ error: 'user not mapped' });
-    const weekStart = req.query.weekStart || dateService.currentWeekStart();
-    const entries = await draftStore.getWeek(user.email || user.teamsId, weekStart);
-    const totalMin = entries.reduce((s, e) => s + (e.durationMin || 0), 0);
+    const summary = await weekSummary.getWeekSummaryForUser(user, req.query.weekStart);
     telemetry.track('rest.week.completed', {
       operationId: req.operationId, source: 'server', stage: 'week',
-      entryCount: entries.length, totalMin, success: true,
+      entryCount: summary.entries.length, totalMin: summary.totalMin, sourceOfTruth: 'xero', success: true,
     });
     res.json({
-      weekStart,
-      entries,
-      totalHours: +(totalMin / 60).toFixed(2),
-      targetHours: config.agent.weeklyHours,
-      needsAttention: entries.filter((e) => e.needsConfirmation).length,
+      ...summary,
+      text: weekSummary.formatWeekSummary(summary),
     });
   } catch (err) { next(err); }
 });

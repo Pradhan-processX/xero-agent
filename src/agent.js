@@ -5,6 +5,7 @@ const xero = require('./xero');
 const draftStore = require('./draftStore');
 const telemetry = require('./telemetry');
 const dateService = require('./dateService');
+const weekSummary = require('./weekSummary');
 
 // ── Azure OpenAI raw fetch ────────────────────────────────────────────────────
 async function callAzure(deployment, messages, opts = {}) {
@@ -95,7 +96,7 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'get_week_summary',
-      description: "Returns the user's logged time entries for the current week with totals versus their weekly target.",
+      description: "Returns the user's Xero time entries for the current week with totals versus their weekly target.",
       parameters: { type: 'object', properties: {}, required: [] },
     },
   },
@@ -205,6 +206,11 @@ async function handleGetWeekSummary(user) {
     (e) => `• ${(e.dateUtc || '').slice(0, 10)} — ${e.projectName} › ${e.taskName}: ${fmtDuration(e.durationMin)}`
   );
   return [`This week: ${+(totalMin / 60).toFixed(1)}h / ${config.agent.weeklyHours}h`, ...lines].join('\n');
+}
+
+async function handleGetXeroWeekSummary(user) {
+  const summary = await weekSummary.getWeekSummaryForUser(user);
+  return weekSummary.formatWeekSummary(summary);
 }
 
 function parsePositiveMinutes(value) {
@@ -647,7 +653,7 @@ Never ask for or mention xeroUserId — the app sets that automatically.`,
             toolResult = JSON.stringify({ ok: true, prepared: pendingMutation.summary });
           }
         } else if (tc.function.name === 'get_week_summary') {
-          toolResult = await handleGetWeekSummary(user);
+          toolResult = await handleGetXeroWeekSummary(user);
           telemetry.track('agent.tool.completed', {
             operationId,
             source: 'agent',
@@ -656,6 +662,18 @@ Never ask for or mention xeroUserId — the app sets that automatically.`,
             latencyMs: Date.now() - toolStart,
             success: true,
           });
+          telemetry.track('agent.reasoning.completed', {
+            operationId,
+            source: 'agent',
+            stage: 'reasoning',
+            iterations: i + 1,
+            draftCount: draftedEntries.length,
+            resultType: 'text',
+            directToolResult: 'get_week_summary',
+            latencyMs: Date.now() - reasoningStart,
+            success: true,
+          });
+          return { type: 'text', content: toolResult };
         } else {
           toolResult = JSON.stringify({ error: `Unknown tool: ${tc.function.name}` });
           telemetry.track('agent.tool.failed', {
