@@ -53,9 +53,19 @@ function truncateMessage(message) {
   return { message: raw.slice(0, max), truncated: true };
 }
 
+// The connected Xero organisation is the ground truth for which company these
+// entries belong to. Prefer its friendly name, then its GUID; fall back to the
+// manual CONVERSATION_TENANT_NAME label and finally the Teams tenant only if Xero
+// is unresolved. getConnectedOrgCached() is synchronous; kick off the one-time
+// async resolution in the background so later turns get the friendly name.
 function tenantName(context) {
+  const org = xero.getConnectedOrgCached();
+  if (!org) xero.getConnectedOrg().catch(() => {});
   const channelData = context.activity.channelData || {};
-  return config.conversationLog.tenantName
+  return (org && org.tenantName)
+    || config.xero.tenantId
+    || (org && org.tenantId)
+    || config.conversationLog.tenantName
     || (channelData.tenant && (channelData.tenant.name || channelData.tenant.id))
     || (context.activity.conversation && context.activity.conversation.tenantId)
     || '';
@@ -94,6 +104,7 @@ function logConversationMessage(context, { operationId, user, sender, message, s
     messageTruncated: clipped.truncated,
     sender,
     tenantName: tenantName(context),
+    xeroTenantId: config.xero.tenantId || (xero.getConnectedOrgCached() || {}).tenantId || '',
     userFirstName: nameParts.firstName,
     userLastName: nameParts.lastName,
     status,
