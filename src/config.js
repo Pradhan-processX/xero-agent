@@ -63,6 +63,12 @@ const config = {
     port: parseInt(process.env.PORT || '3000', 10),
     apiKey: process.env.API_KEY || '',
   },
+  conversationLog: {
+    fullText: process.env.CONVERSATION_LOG_TEXT === 'true',
+    maxChars: parseInt(process.env.CONVERSATION_LOG_MAX_CHARS || '8000', 10),
+    botName: process.env.CONVERSATION_BOT_NAME || 'Xero Timesheet',
+    tenantName: process.env.CONVERSATION_TENANT_NAME || '',
+  },
   required,
 };
 

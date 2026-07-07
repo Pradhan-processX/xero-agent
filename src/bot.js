@@ -37,6 +37,122 @@ function fmtDuration(minutes) {
   return h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`;
 }
 
+function splitDisplayName(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return { firstName: '', lastName: '' };
+  if (parts.length === 1) return { firstName: parts[0], lastName: '' };
+  return { firstName: parts[0], lastName: parts.slice(1).join(' ') };
+}
+
+function truncateMessage(message) {
+  const raw = String(message || '');
+  const max = Number.isFinite(config.conversationLog.maxChars)
+    ? config.conversationLog.maxChars
+    : 8000;
+  if (raw.length <= max) return { message: raw, truncated: false };
+  return { message: raw.slice(0, max), truncated: true };
+}
+
+function tenantName(context) {
+  const channelData = context.activity.channelData || {};
+  return config.conversationLog.tenantName
+    || (channelData.tenant && (channelData.tenant.name || channelData.tenant.id))
+    || (context.activity.conversation && context.activity.conversation.tenantId)
+    || '';
+}
+
+function userNameFor(context, user) {
+  return (user && user.name)
+    || (context.activity.from && context.activity.from.name)
+    || (user && user.email)
+    || 'anonymous';
+}
+
+function conversationMessageFromActivity(text, cardValue) {
+  if (text) return text;
+  if (cardValue && cardValue.intent) return `[${cardValue.intent}]`;
+  return '[card action]';
+}
+
+function logConversationMessage(context, { operationId, user, sender, message, status = 'NoError' }) {
+  if (!config.conversationLog.fullText) return;
+  const displayName = userNameFor(context, user);
+  const nameParts = splitDisplayName(displayName);
+  const clipped = truncateMessage(message);
+
+  telemetry.track('conversation.message', {
+    operationId,
+    source: 'conversation',
+    stage: 'message',
+    userName: displayName,
+    botName: config.conversationLog.botName,
+    channelId: context.activity.channelId || '',
+    conversationId: context.activity.conversation && context.activity.conversation.id,
+    activityId: context.activity.id || '',
+    date: context.activity.timestamp || new Date().toISOString(),
+    message: clipped.message,
+    messageTruncated: clipped.truncated,
+    sender,
+    tenantName: tenantName(context),
+    userFirstName: nameParts.firstName,
+    userLastName: nameParts.lastName,
+    status,
+    success: status === 'NoError',
+  });
+}
+
+async function sendText(context, text, operationId, user, status = 'NoError') {
+  await context.sendActivity(MessageFactory.text(text));
+  logConversationMessage(context, { operationId, user, sender: 'Bot', message: text, status });
+}
+
+function draftCardTranscript(entries) {
+  const lines = ['Draft time entries'];
+  for (const e of entries) {
+    lines.push(`${e.projectName || '?'} > ${e.taskName || '?'} - ${fmtDuration(e.durationMin)} - ${(e.dateUtc || '').slice(0, 10) || '?'}`);
+    if (e.description) lines.push(`Description: ${e.description}`);
+    if (e.issues && e.issues.length) lines.push(`Warnings: ${e.issues.join('; ')}`);
+  }
+  lines.push(entries.some((e) => (e.issues || []).some((i) => i.includes('Future date in the current week')))
+    ? '[Submit planned time to Xero] [Cancel]'
+    : '[Submit to Xero] [Cancel]');
+  return lines.join('\n');
+}
+
+function mutationCardTranscript(mutation) {
+  const isDelete = mutation.action === 'delete';
+  const changeText = isDelete
+    ? `${fmtDuration(mutation.currentDurationMin)} will be deleted`
+    : `${fmtDuration(mutation.currentDurationMin)} -> ${fmtDuration(mutation.newDurationMin)}`;
+  return [
+    isDelete ? 'Delete time entry' : 'Update time entry',
+    `${mutation.projectName || '?'} > ${mutation.taskName || '?'}`,
+    `${changeText} - ${(mutation.dateUtc || '').slice(0, 10) || '?'}`,
+    mutation.reason ? `Reason: ${mutation.reason}` : null,
+    isDelete ? '[Delete time entry] [Cancel]' : '[Update time entry] [Cancel]',
+  ].filter(Boolean).join('\n');
+}
+
+async function sendDraftCard(context, entries, operationId, user) {
+  await context.sendActivity({ type: 'message', attachments: [buildDraftCard(entries)] });
+  logConversationMessage(context, {
+    operationId,
+    user,
+    sender: 'Bot',
+    message: draftCardTranscript(entries),
+  });
+}
+
+async function sendMutationCard(context, mutation, operationId, user) {
+  await context.sendActivity({ type: 'message', attachments: [buildMutationCard(mutation)] });
+  logConversationMessage(context, {
+    operationId,
+    user,
+    sender: 'Bot',
+    message: mutationCardTranscript(mutation),
+  });
+}
+
 // ── Adaptive Card builder ─────────────────────────────────────────────────────
 function isSoftIssue(issue) {
   return issue.includes('unusually long') || issue.includes('Future date in the current week');
@@ -280,6 +396,12 @@ agent.onMessage(async (context) => {
     mock: config.xero.mock,
     isCardAction: !!cardValue,
   });
+  logConversationMessage(context, {
+    operationId,
+    user: null,
+    sender: 'User',
+    message: conversationMessageFromActivity(text, cardValue),
+  });
 
   // ── Resolve user ─────────────────────────────────────────────────────────────
   const user = userMap.resolveUser(identity);
@@ -289,9 +411,13 @@ agent.onMessage(async (context) => {
       userHash: telemetry.hash(identity),
       success: false,
     });
-    await context.sendActivity(MessageFactory.text(
-      "I don't recognise your Teams account. Ask your admin to add you to the user map."
-    ));
+    await sendText(
+      context,
+      "I don't recognise your Teams account. Ask your admin to add you to the user map.",
+      operationId,
+      null,
+      'Error'
+    );
     return;
   }
   telemetry.track('bot.user.resolved', {
@@ -353,7 +479,7 @@ agent.onMessage(async (context) => {
             operationId, source: 'bot',
             conversationHash: telemetry.hash(conversationId), success: true,
           });
-          await context.sendActivity(MessageFactory.text(message));
+          await sendText(context, message, operationId, user);
           telemetry.track('bot.reply.sent', { operationId, source: 'bot', stage: 'reply', success: true });
         } catch (err) {
           telemetry.track('bot.confirmation.mutation_failed', {
@@ -364,7 +490,7 @@ agent.onMessage(async (context) => {
             errorName: err.name || 'Error',
             success: false,
           });
-          await context.sendActivity(MessageFactory.text(`I could not apply that change: ${err.message}`));
+          await sendText(context, `I could not apply that change: ${err.message}`, operationId, user, 'Error');
           telemetry.track('bot.reply.sent', { operationId, source: 'bot', stage: 'reply', success: false });
         }
         return;
@@ -378,9 +504,13 @@ agent.onMessage(async (context) => {
       );
 
       if (submittable.length === 0) {
-        await context.sendActivity(MessageFactory.text(
-          'No complete entries to submit. Fix the flagged issues first, or type **Cancel** to discard.'
-        ));
+        await sendText(
+          context,
+          'No complete entries to submit. Fix the flagged issues first, or type **Cancel** to discard.',
+          operationId,
+          user,
+          'Error'
+        );
         telemetry.track('bot.reply.sent', {
           operationId, source: 'bot', stage: 'reply',
           note: 'no_submittable_entries', success: true,
@@ -438,9 +568,13 @@ agent.onMessage(async (context) => {
         conversationHash: telemetry.hash(conversationId), success: true,
       });
 
-      await context.sendActivity(MessageFactory.text(
-        `Submitted ${lines.filter((l) => l.startsWith('✓')).length} entr${lines.length === 1 ? 'y' : 'ies'} to Xero:\n${lines.join('\n')}`
-      ));
+      await sendText(
+        context,
+        `Submitted ${lines.filter((l) => l.startsWith('✓')).length} entr${lines.length === 1 ? 'y' : 'ies'} to Xero:\n${lines.join('\n')}`,
+        operationId,
+        user,
+        failedCount === 0 ? 'NoError' : 'Error'
+      );
       telemetry.track('bot.reply.sent', { operationId, source: 'bot', stage: 'reply', success: true });
       return;
     }
@@ -465,11 +599,14 @@ agent.onMessage(async (context) => {
         operationId, source: 'bot',
         conversationHash: telemetry.hash(conversationId), success: true,
       });
-      await context.sendActivity(MessageFactory.text(
+      await sendText(
+        context,
         state.pendingMutation
           ? 'Cancelled. No changes were made to Xero.'
-          : 'Cancelled. Nothing was submitted to Xero.'
-      ));
+          : 'Cancelled. Nothing was submitted to Xero.',
+        operationId,
+        user
+      );
       telemetry.track('bot.reply.sent', { operationId, source: 'bot', stage: 'reply', success: true });
       return;
     }
@@ -488,7 +625,7 @@ agent.onMessage(async (context) => {
       operationId, source: 'bot', stage: 'agent',
       errorName: err.name || 'Error', success: false,
     });
-    await context.sendActivity(MessageFactory.text(`Something went wrong: ${err.message}`));
+    await sendText(context, `Something went wrong: ${err.message}`, operationId, user, 'Error');
     return;
   }
 
@@ -508,7 +645,7 @@ agent.onMessage(async (context) => {
       pendingEntries: saved,
       pendingMutation: null,
     });
-    await context.sendActivity({ type: 'message', attachments: [buildDraftCard(saved)] });
+    await sendDraftCard(context, saved, operationId, user);
     telemetry.track('bot.card.sent', {
       operationId, source: 'bot', stage: 'card',
       entryCount: saved.length, success: true,
@@ -524,7 +661,7 @@ agent.onMessage(async (context) => {
       pendingEntries: [],
       pendingMutation: result.mutation,
     });
-    await context.sendActivity({ type: 'message', attachments: [buildMutationCard(result.mutation)] });
+    await sendMutationCard(context, result.mutation, operationId, user);
     telemetry.track('bot.mutation_card.sent', {
       operationId,
       source: 'bot',
@@ -544,13 +681,14 @@ agent.onMessage(async (context) => {
       pendingEntries: [],
       pendingMutation: null,
     });
-    await context.sendActivity(MessageFactory.text(result.content));
+    await sendText(context, result.content, operationId, user);
     telemetry.track('bot.reply.sent', { operationId, source: 'bot', stage: 'reply', success: true });
   }
 });
 
 // Welcome message when the bot is first added to a chat
 agent.onConversationUpdate('membersAdded', async (context) => {
+  const operationId = telemetry.newOperationId();
   if (isDuplicateActivity(context)) {
     telemetry.track('bot.conversation_update.duplicate_ignored', {
       source: 'bot',
@@ -564,9 +702,12 @@ agent.onConversationUpdate('membersAdded', async (context) => {
 
   for (const member of context.activity.membersAdded || []) {
     if (member.id !== context.activity.recipient.id) {
-      await context.sendActivity(MessageFactory.text(
-        "Hi! I'm your Xero timesheet assistant. Tell me what you worked on and I'll log it.\nTry: _\"3h on the DM project meetings today\"_"
-      ));
+      await sendText(
+        context,
+        "Hi! I'm your Xero timesheet assistant. Tell me what you worked on and I'll log it.\nTry: _\"3h on the DM project meetings today\"_",
+        operationId,
+        null
+      );
     }
   }
 });
