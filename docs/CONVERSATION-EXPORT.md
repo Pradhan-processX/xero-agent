@@ -37,7 +37,7 @@ Open the Application Insights Logs blade, set the time range, then run:
 customEvents
 | where name == "conversation.message"
 | extend d = customDimensions
-| extend ActivityDate = todatetime(tostring(d.date))
+| extend ActivityDate = todatetime(tostring(d["date"]))
 | project
     ['User Name'] = tostring(d.userName),
     ['Bot Name'] = tostring(d.botName),
@@ -47,6 +47,7 @@ customEvents
     ['Message'] = tostring(d.message),
     ['Sender'] = tostring(d.sender),
     ['Tenant Name'] = tostring(d.tenantName),
+    ['Xero Tenant Id'] = tostring(d.xeroTenantId),
     ['User First Name'] = tostring(d.userFirstName),
     ['User Last Name'] = tostring(d.userLastName),
     ['Status'] = tostring(d.status),
@@ -66,7 +67,7 @@ customEvents
 | where name == "conversation.message"
 | extend d = customDimensions
 | where tostring(d.conversationId) == "PASTE_CONVERSATION_ID_HERE"
-| extend ActivityDate = todatetime(tostring(d.date))
+| extend ActivityDate = todatetime(tostring(d["date"]))
 | project
     ['Date'] = coalesce(ActivityDate, timestamp),
     ['Sender'] = tostring(d.sender),
@@ -83,3 +84,8 @@ customEvents
 - Message text is truncated at `CONVERSATION_LOG_MAX_CHARS` characters. Increase carefully if needed.
 - Existing hashed operational telemetry still remains; this export uses the separate
   `conversation.message` event.
+- `Tenant Name` reflects the connected Xero organisation: its friendly org name when
+  resolvable, otherwise the Xero tenant GUID. `CONVERSATION_TENANT_NAME` is now only a
+  last-resort label used when the Xero connection cannot be resolved. `Xero Tenant Id`
+  always carries the raw org GUID so the export self-verifies which company the entries
+  belong to, even if the friendly name has not yet been cached.

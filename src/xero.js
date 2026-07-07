@@ -172,6 +172,40 @@ async function getProjectUsers() {
   return (res.body.items || []).map((u) => ({ userId: u.userId, name: u.name, email: u.email }));
 }
 
+// Connected Xero organisation (tenant). The org name effectively never changes for
+// a given connection, so cache it for the process lifetime. getConnectedOrgCached()
+// is a synchronous accessor for hot-path callers (e.g. conversation logging);
+// getConnectedOrg() performs the one-time resolution.
+let _orgCache = null;
+
+function getConnectedOrgCached() {
+  return _orgCache;
+}
+
+async function getConnectedOrg() {
+  if (_orgCache) return _orgCache;
+  if (MOCK) {
+    _orgCache = { tenantId: config.xero.tenantId || 'mock', tenantName: 'Demo Company (Mock)' };
+    return _orgCache;
+  }
+  try {
+    const { x, tid } = await ensureToken();
+    // updateTenants(false) only hits /connections (needs a valid token, no accounting
+    // scope) and returns tenants carrying tenantName directly.
+    await x.updateTenants(false);
+    const match = (x.tenants || []).find((t) => t.tenantId === tid) || (x.tenants || [])[0];
+    _orgCache = { tenantId: tid, tenantName: (match && match.tenantName) || '' };
+    return _orgCache;
+  } catch (err) {
+    telemetry.track('xero.org.resolve.failed', {
+      source: 'xero', stage: 'org_resolve', errorName: err.name || 'Error', success: false,
+    });
+    // Do not cache failures — always hand back the configured tenant id so callers
+    // still have the org GUID, and retry resolution on the next call.
+    return { tenantId: config.xero.tenantId || '', tenantName: '' };
+  }
+}
+
 async function getTimeEntries({
   projectId,
   userId,
@@ -355,6 +389,8 @@ module.exports = {
   getProjects,
   getTasks,
   getProjectUsers,
+  getConnectedOrg,
+  getConnectedOrgCached,
   getTimeEntries,
   createTimeEntry,
   updateTimeEntry,
